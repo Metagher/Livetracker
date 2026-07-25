@@ -32,7 +32,7 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle
+  Settings, Download, Upload, AlertTriangle, RefreshCw
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -47,11 +47,23 @@ import ReactDOM from "react-dom/client";
    Werte selbst werden NICHT synchronisiert - nur die App-Daten.
    ============================================================ */
 const CONFIG_KEY = "lifetracker-config";
+// Entfernt versehentlich mit eingegebene /rest/v1-Pfade und trailing Slashes,
+// damit die App auch dann funktioniert, wenn die volle REST-URL statt nur
+// der Projekt-URL eingetragen wurde.
+function normalizeSupabaseUrl(url) {
+  if (!url) return url;
+  return url.trim().replace(/\/rest\/v1\/?.*$/i, "").replace(/\/+$/, "");
+}
 function getConfig() {
-  try { return JSON.parse(localStorage.getItem(CONFIG_KEY) || "null"); } catch { return null; }
+  try {
+    const cfg = JSON.parse(localStorage.getItem(CONFIG_KEY) || "null");
+    if (cfg?.supabaseUrl) cfg.supabaseUrl = normalizeSupabaseUrl(cfg.supabaseUrl);
+    return cfg;
+  } catch { return null; }
 }
 function setConfig(cfg) {
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+  const clean = { ...cfg, supabaseUrl: normalizeSupabaseUrl(cfg.supabaseUrl) };
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(clean));
 }
 function getAnthropicKey() {
   return getConfig()?.anthropicKey || "";
@@ -132,11 +144,12 @@ function SetupGate({ children }) {
     setTesting(true);
     setTestErr(null);
     try {
-      const res = await fetch(`${supabaseUrl.replace(/\/$/, "")}/rest/v1/kv_store?select=key&limit=1`, {
+      const cleanUrl = normalizeSupabaseUrl(supabaseUrl);
+      const res = await fetch(`${cleanUrl}/rest/v1/kv_store?select=key&limit=1`, {
         headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
       });
       if (!res.ok) throw new Error("Verbindung fehlgeschlagen (" + res.status + "). Prüfe URL/Key und ob die Tabelle kv_store existiert.");
-      const next = { supabaseUrl: supabaseUrl.replace(/\/$/, ""), supabaseKey, anthropicKey };
+      const next = { supabaseUrl: cleanUrl, supabaseKey, anthropicKey };
       setConfig(next);
       setCfgState(next);
     } catch (e) {
@@ -160,7 +173,8 @@ function SetupGate({ children }) {
 
         <label style={{ fontSize: 11.5, fontWeight: 600, color: "#93949F", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 6 }}>Supabase-Projekt-URL</label>
         <input value={supabaseUrl} onChange={(e) => setSupabaseUrl(e.target.value)} placeholder="https://xxxxx.supabase.co"
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #31333D", background: "#15161B", color: "#F1EFE9", fontSize: 13.5, marginBottom: 14 }} />
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #31333D", background: "#15161B", color: "#F1EFE9", fontSize: 13.5, marginBottom: 6 }} />
+        <div style={{ fontSize: 11, color: "#5B5D68", marginBottom: 14 }}>Nur die Basis-URL, ohne "/rest/v1" am Ende (wird automatisch ergänzt).</div>
 
         <label style={{ fontSize: 11.5, fontWeight: 600, color: "#93949F", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 6 }}>Supabase anon Public Key</label>
         <input value={supabaseKey} onChange={(e) => setSupabaseKey(e.target.value)} placeholder="eyJhbGciOi..." type="password"
@@ -495,36 +509,45 @@ function useLifeOSData() {
   const [goals, setGoals] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [h, e, a, c, j, w, g, t] = await Promise.allSettled([
-          window.storage.get("los-habits"),
-          window.storage.get("los-entries"),
-          window.storage.get("los-achievements"),
-          window.storage.get("los-coach"),
-          window.storage.get("los-journal"),
-          window.storage.get("los-weekly-reports"),
-          window.storage.get("los-goals"),
-          window.storage.get("los-tasks"),
-        ]);
-        setHabits(h.status === "fulfilled" && h.value ? JSON.parse(h.value.value) : []);
-        setEntries(e.status === "fulfilled" && e.value ? JSON.parse(e.value.value) : {});
-        setAchievements(a.status === "fulfilled" && a.value ? JSON.parse(a.value.value) : []);
-        setCoach(c.status === "fulfilled" && c.value ? JSON.parse(c.value.value) : null);
-        setJournal(j.status === "fulfilled" && j.value ? JSON.parse(j.value.value) : {});
-        setWeeklyReports(w.status === "fulfilled" && w.value ? JSON.parse(w.value.value) : {});
-        setGoals(g.status === "fulfilled" && g.value ? JSON.parse(g.value.value) : []);
-        setTasks(t.status === "fulfilled" && t.value ? JSON.parse(t.value.value) : []);
-      } catch (err) {
-        setError("Deine Daten konnten nicht geladen werden.");
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const loadAll = useCallback(async ({ silent } = {}) => {
+    if (silent) setRefreshing(true);
+    try {
+      const [h, e, a, c, j, w, g, t] = await Promise.allSettled([
+        window.storage.get("los-habits"),
+        window.storage.get("los-entries"),
+        window.storage.get("los-achievements"),
+        window.storage.get("los-coach"),
+        window.storage.get("los-journal"),
+        window.storage.get("los-weekly-reports"),
+        window.storage.get("los-goals"),
+        window.storage.get("los-tasks"),
+      ]);
+      setHabits(h.status === "fulfilled" && h.value ? JSON.parse(h.value.value) : []);
+      setEntries(e.status === "fulfilled" && e.value ? JSON.parse(e.value.value) : {});
+      setAchievements(a.status === "fulfilled" && a.value ? JSON.parse(a.value.value) : []);
+      setCoach(c.status === "fulfilled" && c.value ? JSON.parse(c.value.value) : null);
+      setJournal(j.status === "fulfilled" && j.value ? JSON.parse(j.value.value) : {});
+      setWeeklyReports(w.status === "fulfilled" && w.value ? JSON.parse(w.value.value) : {});
+      setGoals(g.status === "fulfilled" && g.value ? JSON.parse(g.value.value) : []);
+      setTasks(t.status === "fulfilled" && t.value ? JSON.parse(t.value.value) : []);
+      setError(null);
+    } catch (err) {
+      setError("Deine Daten konnten nicht geladen werden.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const refresh = useCallback(() => loadAll({ silent: true }), [loadAll]);
 
   const persistHabits = useCallback(async (next) => {
     setHabits(next);
@@ -560,8 +583,9 @@ function useLifeOSData() {
   }, []);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, loading, error,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, loading, refreshing, error,
     persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks,
+    refresh,
   };
 }
 
@@ -3044,19 +3068,11 @@ function TasksPage({ tasks, persistTasks, habits }) {
           {doneTasks.length > 0 && (
             <div>
               <SectionLabel>Erledigt</SectionLabel>
-              <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-                {groupHabitsByCategory(doneTasks).map(({ category, habits: groupTasks }) => (
-                  <div key={category}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
-                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryColor(category) }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>{category}</span>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {groupTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={() => toggleCompleted(t)} onEdit={() => { setModalTask(t); setShowModal(true); }} />)}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <CompletedTasksCalendar
+                doneTasks={doneTasks}
+                onToggle={toggleCompleted}
+                onEdit={(t) => { setModalTask(t); setShowModal(true); }}
+              />
             </div>
           )}
         </>
@@ -3070,6 +3086,100 @@ function TasksPage({ tasks, persistTasks, habits }) {
           onSave={handleSave}
           onDelete={handleDelete}
         />
+      )}
+    </div>
+  );
+}
+
+function CompletedTasksCalendar({ doneTasks, onToggle, onEdit }) {
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const [selectedDay, setSelectedDay] = useState(todayKey());
+
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(weekStart, i))), [weekStart]);
+  const isCurrentWeek = toKey(startOfWeek(new Date())) === toKey(weekStart);
+  const weekMonthYearLabel = keyToDate(weekDays[0]).toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+  const weekNum = isoWeekNumber(keyToDate(weekDays[0]));
+  const isFuture = (k) => k > todayKey();
+
+  const byDate = useMemo(() => {
+    const map = {};
+    doneTasks.forEach((t) => {
+      if (!t.completedAt) return;
+      if (!map[t.completedAt]) map[t.completedAt] = [];
+      map[t.completedAt].push(t);
+    });
+    return map;
+  }, [doneTasks]);
+
+  const selectedTasks = byDate[selectedDay] || [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+        <span style={{ fontSize: 11, color: COLORS.textFaint }}>Wann wurde was erledigt?</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <IconButton onClick={() => setWeekStart(addDays(weekStart, -7))} title="Vorherige Woche"><ChevronLeft size={14} /></IconButton>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: COLORS.textMuted, minWidth: 150, textAlign: "center", fontFamily: "JetBrains Mono, monospace", textTransform: "capitalize" }}>
+            {weekMonthYearLabel} · KW {weekNum}
+          </span>
+          <IconButton onClick={() => setWeekStart(addDays(weekStart, 7))} title="Nächste Woche"><ChevronRight size={14} /></IconButton>
+          {!isCurrentWeek && (
+            <button onClick={() => { setWeekStart(startOfWeek(new Date())); setSelectedDay(todayKey()); }} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 11.5 }}>Heute</button>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, marginBottom: 16 }}>
+        {weekDays.map((k, i) => {
+          const isToday = k === todayKey();
+          const isSelected = k === selectedDay;
+          const weekend = i >= 5;
+          const future = isFuture(k);
+          const d = keyToDate(k);
+          const count = (byDate[k] || []).length;
+          return (
+            <div key={k}>
+              <div style={{ fontSize: 10, fontWeight: 700, textAlign: "center", color: weekend ? COLORS.ember2 : COLORS.textFaint, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                {WEEKDAY_LABELS[i]}
+              </div>
+              <button
+                onClick={() => !future && setSelectedDay(k)}
+                disabled={future}
+                title={shortDate(k)}
+                style={{
+                  width: "100%", aspectRatio: "1", borderRadius: 11, cursor: future ? "default" : "pointer",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", gap: 2,
+                  background: weekend ? COLORS.bgSoft : COLORS.surfaceRaised,
+                  border: isSelected ? `2px solid ${COLORS.mint}` : isToday ? `1.5px solid ${COLORS.textMuted}` : `1px solid ${COLORS.borderSoft}`,
+                  opacity: future ? 0.35 : 1,
+                }}>
+                <span style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, color: COLORS.text }}>{d.getDate()}</span>
+                {count > 0 && (
+                  <span style={{
+                    fontFamily: "JetBrains Mono, monospace", fontSize: 9.5, fontWeight: 700, color: COLORS.mint,
+                    display: "flex", alignItems: "center", gap: 2,
+                  }}>
+                    <Check size={9} strokeWidth={3} /> {count}
+                  </span>
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>
+        {selectedDay === todayKey() ? "Heute" : longDate(selectedDay)}
+      </div>
+
+      {selectedTasks.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 12, padding: "12px 14px" }}>
+          An diesem Tag wurde keine Aufgabe erledigt.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {selectedTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={() => onToggle(t)} onEdit={() => onEdit(t)} />)}
+        </div>
       )}
     </div>
   );
@@ -3343,7 +3453,7 @@ function useIsMobile() {
   return isMobile;
 }
 
-function Sidebar({ page, setPage, totalPoints }) {
+function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing }) {
   const items = [
     { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
@@ -3359,14 +3469,23 @@ function Sidebar({ page, setPage, totalPoints }) {
       width: 220, flexShrink: 0, borderRight: `1px solid ${COLORS.borderSoft}`, padding: "22px 14px",
       display: "flex", flexDirection: "column", gap: 4,
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px", marginBottom: 26 }}>
-        <div style={{
-          width: 30, height: 30, borderRadius: 9, background: `linear-gradient(135deg, ${COLORS.ember1}, ${COLORS.ember2})`,
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}>
-          <Flame size={16} style={{ color: "#1A1305" }} />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 8px", marginBottom: 26 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div style={{
+            width: 30, height: 30, borderRadius: 9, background: `linear-gradient(135deg, ${COLORS.ember1}, ${COLORS.ember2})`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <Flame size={16} style={{ color: "#1A1305" }} />
+          </div>
+          <span style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 16 }}>Lifetracker</span>
         </div>
-        <span style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 16 }}>Lifetracker</span>
+        <button onClick={onRefresh} title="Daten neu laden" disabled={refreshing} style={{
+          width: 28, height: 28, borderRadius: 8, border: `1px solid ${COLORS.border}`, background: "transparent",
+          color: COLORS.textMuted, display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: refreshing ? "default" : "pointer", flexShrink: 0,
+        }}>
+          <RefreshCw size={13} style={{ animation: refreshing ? "los-spin 0.8s linear infinite" : "none" }} />
+        </button>
       </div>
       {items.map(({ key, label, Icon }) => (
         <button key={key} onClick={() => setPage(key)} style={{
@@ -3424,7 +3543,7 @@ function BottomNav({ page, setPage }) {
   );
 }
 
-function MobileHeader({ totalPoints }) {
+function MobileHeader({ totalPoints, onRefresh, refreshing }) {
   return (
     <div style={{
       position: "sticky", top: 0, zIndex: 150, display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -3440,12 +3559,21 @@ function MobileHeader({ totalPoints }) {
         </div>
         <span style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 15 }}>Lifetracker</span>
       </div>
-      <div style={{
-        display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 20,
-        background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`,
-      }}>
-        <Flame size={11} style={{ color: COLORS.ember1 }} />
-        <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, fontWeight: 700, color: COLORS.ember2 }}>{totalPoints}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button onClick={onRefresh} title="Daten neu laden" disabled={refreshing} style={{
+          width: 28, height: 28, borderRadius: 8, border: `1px solid ${COLORS.borderSoft}`, background: "transparent",
+          color: COLORS.textMuted, display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: refreshing ? "default" : "pointer",
+        }}>
+          <RefreshCw size={13} style={{ animation: refreshing ? "los-spin 0.8s linear infinite" : "none" }} />
+        </button>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 20,
+          background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`,
+        }}>
+          <Flame size={11} style={{ color: COLORS.ember1 }} />
+          <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, fontWeight: 700, color: COLORS.ember2 }}>{totalPoints}</span>
+        </div>
       </div>
     </div>
   );
@@ -3454,8 +3582,9 @@ function MobileHeader({ totalPoints }) {
 
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, loading, error,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, loading, refreshing, error,
     persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks,
+    refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
   const [page, setPage] = useState("dashboard");
@@ -3555,6 +3684,10 @@ export default function LifeOS() {
           0% { transform: translate(0,0) rotate(0deg); opacity: 1; }
           100% { transform: translate(var(--dx), 160px) rotate(var(--rot)); opacity: 0; }
         }
+        @keyframes los-spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-thumb { background: ${COLORS.border}; border-radius: 4px; }
         button:focus-visible, input:focus-visible { outline: 2px solid ${COLORS.ember2}; outline-offset: 1px; }
@@ -3579,7 +3712,7 @@ export default function LifeOS() {
         </div>
       )}
 
-      {isMobile ? <MobileHeader totalPoints={totalPoints} /> : <Sidebar page={page} setPage={setPage} totalPoints={totalPoints} />}
+      {isMobile ? <MobileHeader totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} /> : <Sidebar page={page} setPage={setPage} totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} />}
 
       <div style={{
         flex: 1, overflowY: "auto",
