@@ -1565,7 +1565,7 @@ function Dashboard({
   const allStats = useMemo(() => active.map((h) => simulateHabit(h, entries, todayKey())), [active, entries]);
   const totalToday = useMemo(() => {
     const k = todayKey();
-    const habitPart = allStats.reduce((sum, s) => sum + (s.daily.find((d) => d.date === k)?.delta > 0 ? s.daily.find((d) => d.date === k).delta : 0), 0);
+    const habitPart = allStats.reduce((sum, s) => sum + (s.daily.find((d) => d.date === k)?.delta || 0), 0);
     return habitPart + goalPointsOnDate(goals, k) + taskPointsOnDate(tasks, k);
   }, [allStats, goals, tasks]);
   const totalAll = useMemo(() => allStats.reduce((s, st) => s + st.totalPoints, 0) + totalGoalPoints(goals) + totalTaskPoints(tasks), [allStats, goals, tasks]);
@@ -1855,11 +1855,26 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
     let running = 0;
     return keys.map((k) => {
       running += dailyPointsMap[k];
-      return { date: shortDate(k), points: dailyPointsMap[k], total: running };
+      return { key: k, date: shortDate(k), points: dailyPointsMap[k], total: running };
     });
   }, [dailyPointsMap]);
 
   const last30 = combinedDaily.slice(-30);
+
+  const perHabitDailyMap = useMemo(() => active.map((h, i) => ({
+    habit: h, map: Object.fromEntries((allStats[i]?.daily || []).map((d) => [d.date, d])),
+  })), [active, allStats]);
+
+  const last30Breakdown = useMemo(() => {
+    return last30.map((d) => {
+      const habitLines = perHabitDailyMap
+        .map(({ habit, map }) => ({ habit, entry: map[d.key] }))
+        .filter(({ entry }) => entry && entry.delta !== 0);
+      const goalLines = (goals || []).filter((g) => g.achieved && g.achievedAt === d.key);
+      const taskLines = (tasks || []).filter((t) => t.completed && t.completedAt === d.key);
+      return { ...d, habitLines, goalLines, taskLines };
+    });
+  }, [last30, perHabitDailyMap, goals, tasks]);
 
   const [viewYear, setViewYear] = useState(() => new Date().getFullYear());
   const currentYear = new Date().getFullYear();
@@ -1900,6 +1915,8 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
     });
   }, [active, allStats, tasks, viewYear]);
   const [hoveredMonth, setHoveredMonth] = useState(null);
+  const [hoveredDay, setHoveredDay] = useState(null);
+  const maxAbsDayPoints = Math.max(1, ...last30Breakdown.map((d) => Math.abs(d.points)));
 
   const achievedGoals = (goals || []).filter((g) => g.achieved).sort((a, b) => (b.achievedAt || "").localeCompare(a.achievedAt || ""));
   const openGoalsCount = (goals || []).filter((g) => !g.achieved).length;
@@ -2019,17 +2036,87 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
         <SectionLabel>Punkte pro Tag (letzte 30 Tage)</SectionLabel>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={last30}>
-            <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} minTickGap={20} />
-            <YAxis tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} labelStyle={{ color: COLORS.text }} />
-            <Bar dataKey="points" radius={[4, 4, 0, 0]}>
-              {last30.map((d, i) => <rect key={i} fill={d.points >= 0 ? COLORS.mint : COLORS.coral} />)}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+        <div style={{ overflowX: "auto", paddingBottom: 4 }}>
+          <div style={{ display: "flex", gap: isMobile ? 3 : 4, alignItems: "stretch", height: 168, minWidth: last30Breakdown.length * (isMobile ? 12 : 16) }}>
+            {last30Breakdown.map((d, i) => {
+              const hasSources = d.habitLines.length > 0 || d.goalLines.length > 0 || d.taskLines.length > 0;
+              const barColor = d.points > 0 ? COLORS.mint : d.points < 0 ? COLORS.coral : COLORS.borderSoft;
+              const barPct = Math.min(100, Math.round((Math.abs(d.points) / maxAbsDayPoints) * 100));
+              const showLabel = i % 5 === 0 || i === last30Breakdown.length - 1;
+              const isRightSide = i > last30Breakdown.length * 0.7;
+              return (
+                <div key={d.key} style={{ flex: "1 0 auto", minWidth: isMobile ? 12 : 16, display: "flex", flexDirection: "column", position: "relative" }}>
+                  <div
+                    onMouseEnter={() => hasSources && setHoveredDay(d.key)}
+                    onMouseLeave={() => setHoveredDay((h) => (h === d.key ? null : h))}
+                    onClick={() => hasSources && setHoveredDay((h) => (h === d.key ? null : d.key))}
+                    style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", cursor: hasSources ? "pointer" : "default", padding: "0 1px" }}
+                  >
+                    {/* obere Hälfte: positive Balken wachsen nach oben */}
+                    <div style={{ flex: 1, display: "flex", alignItems: "flex-end" }}>
+                      {d.points > 0 && <div style={{ width: "100%", height: `${barPct}%`, background: barColor, borderRadius: "3px 3px 0 0", opacity: hoveredDay === d.key ? 1 : 0.85 }} />}
+                    </div>
+                    {/* Nulllinie */}
+                    <div style={{ height: 1, background: COLORS.borderSoft }} />
+                    {/* untere Hälfte: negative Balken wachsen nach unten */}
+                    <div style={{ flex: 1, display: "flex", alignItems: "flex-start" }}>
+                      {d.points < 0 && <div style={{ width: "100%", height: `${barPct}%`, background: barColor, borderRadius: "0 0 3px 3px", opacity: hoveredDay === d.key ? 1 : 0.85 }} />}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 9, color: COLORS.textFaint, textAlign: "center", marginTop: 4, height: 12 }}>
+                    {showLabel ? d.date : ""}
+                  </div>
+
+                  {hoveredDay === d.key && (
+                    <div style={{
+                      position: "absolute", bottom: "calc(100% + 8px)", zIndex: 70, width: 230,
+                      ...(isRightSide ? { right: 0 } : { left: "50%", transform: "translateX(-50%)" }),
+                      background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 12,
+                      padding: 12, boxShadow: "0 20px 40px rgba(0,0,0,0.45)",
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <span style={{ fontSize: 11.5, fontWeight: 700 }}>{longDate(d.key)}</span>
+                        <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12.5, fontWeight: 700, color: d.points < 0 ? COLORS.coral : COLORS.mint }}>
+                          {d.points >= 0 ? "+" : ""}{d.points}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 180, overflowY: "auto" }}>
+                        {d.habitLines.map(({ habit, entry }) => (
+                          <div key={habit.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                            <span style={{ width: 6, height: 6, borderRadius: "50%", background: habit.color, flexShrink: 0 }} />
+                            <span style={{ flex: 1, color: COLORS.textMuted }}>{habit.name}</span>
+                            <span style={{ fontFamily: "JetBrains Mono, monospace", fontWeight: 600, color: entry.delta < 0 ? COLORS.coral : COLORS.text }}>
+                              {entry.delta >= 0 ? "+" : ""}{entry.delta}
+                            </span>
+                          </div>
+                        ))}
+                        {d.goalLines.map((g) => (
+                          <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                            <Target size={10} style={{ color: COLORS.violet, flexShrink: 0 }} />
+                            <span style={{ flex: 1, color: COLORS.textMuted }}>{g.title}</span>
+                            <span style={{ fontFamily: "JetBrains Mono, monospace", fontWeight: 600, color: COLORS.text }}>+{g.points}</span>
+                          </div>
+                        ))}
+                        {d.taskLines.map((t) => (
+                          <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5 }}>
+                            <ClipboardList size={10} style={{ color: COLORS.mint, flexShrink: 0 }} />
+                            <span style={{ flex: 1, color: COLORS.textMuted }}>{t.title}</span>
+                            <span style={{ fontFamily: "JetBrains Mono, monospace", fontWeight: 600, color: COLORS.text }}>+{t.points}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 14, marginTop: 10, fontSize: 11, color: COLORS.textFaint }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: COLORS.mint, display: "inline-block" }} />Positiv</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: COLORS.coral, display: "inline-block" }} />Negativ</span>
+          <span>Tippen/Hovern für Aufschlüsselung</span>
+        </div>
       </div>
 
       {(goals || []).length > 0 && (
@@ -2390,9 +2477,12 @@ function CoachPage({ habits, entries, coach, persistCoach, goals, tasks, journal
    optionalem Tages-Feedback vom KI-Coach.
    ============================================================ */
 function stripHtml(html) {
+  if (!html) return "";
   const tmp = document.createElement("div");
-  tmp.innerHTML = html || "";
-  return (tmp.textContent || tmp.innerText || "").trim();
+  tmp.innerHTML = html;
+  tmp.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+  tmp.querySelectorAll("p, div, li").forEach((el) => el.append("\n"));
+  return (tmp.textContent || tmp.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function buildDaySummary(dateKey, habitRows, journalHtml, goals, tasksForDay) {
@@ -2556,6 +2646,10 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks })
   const [loadingFeedback, setLoadingFeedback] = useState(false);
   const [feedbackErr, setFeedbackErr] = useState(null);
   const [saved, setSaved] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [exportFrom, setExportFrom] = useState(() => toKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
+  const [exportTo, setExportTo] = useState(() => todayKey());
+  const [exportErr, setExportErr] = useState(null);
   const editorRef = useRef(null);
 
   const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(weekStart, i))), [weekStart]);
@@ -2567,6 +2661,50 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks })
     const s = simulateHabit(h, entries, todayKey());
     return { habit: h, map: Object.fromEntries(s.daily.map((d) => [d.date, d])) };
   }), [habits, entries]);
+
+  const buildExportMarkdown = (fromKey, toKeyStr) => {
+    if (!fromKey || !toKeyStr || fromKey > toKeyStr) return null;
+    const days = [];
+    let cursor = keyToDate(fromKey);
+    const end = keyToDate(toKeyStr);
+    while (cursor <= end) {
+      days.push(toKey(cursor));
+      cursor = addDays(cursor, 1);
+    }
+
+    const sections = days.map((k) => {
+      const entry = journal[k];
+      const journalText = entry ? stripHtml(entry.text) : "";
+      const hasContent = journalText.length > 0 || !!entry?.feedback;
+      if (!hasContent) return null;
+
+      const rows = perHabitDailyMap.map(({ habit, map }) => ({ habit, entry: map[k] })).filter(({ entry }) => entry !== undefined);
+      const total = rows.reduce((s, { entry }) => s + entry.delta, 0);
+      const habitLines = rows.map(({ habit, entry }) =>
+        `- ${habit.name}: ${entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : "offen"} (${entry.delta >= 0 ? "+" : ""}${entry.delta})`
+      ).join("\n");
+
+      let md = `## ${longDate(k)}\n\n`;
+      if (rows.length > 0) md += `**Punkte des Tages:** ${total >= 0 ? "+" : ""}${total}\n\n**Habits:**\n${habitLines}\n\n`;
+      if (journalText) md += `**Tagebuch:**\n\n${journalText}\n\n`;
+      if (entry?.feedback) md += `**Coach-Feedback:**\n\n${entry.feedback}\n\n`;
+      return md;
+    }).filter(Boolean);
+
+    if (sections.length === 0) return null;
+    return `# Journal-Export\n\nZeitraum: ${shortDate(fromKey)} – ${shortDate(toKeyStr)}\n\n${sections.join("---\n\n")}`;
+  };
+
+  const runExport = () => {
+    setExportErr(null);
+    const md = buildExportMarkdown(exportFrom, exportTo);
+    if (!md) {
+      setExportErr("Keine Tagebucheinträge in diesem Zeitraum gefunden.");
+      return;
+    }
+    downloadFile(`journal-export-${exportFrom}-bis-${exportTo}.md`, md, "text/markdown");
+    setShowExport(false);
+  };
 
   const dayTotal = (dateKey) => perHabitDailyMap.reduce((sum, { map }) => sum + (map[dateKey]?.delta || 0), 0);
 
@@ -2615,7 +2753,35 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks })
 
   return (
     <div>
-      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, marginBottom: 20 }}>Journal</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
+        <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Journal</h1>
+        <button onClick={() => setShowExport((s) => !s)} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 6 }}>
+          <Download size={14} /> Exportieren
+        </button>
+      </div>
+
+      {showExport && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, padding: 16, marginBottom: 20 }}>
+          <SectionLabel>Tagesberichte exportieren</SectionLabel>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+            <div style={{ flex: "1 1 180px" }}>
+              <label style={labelStyle}>Von</label>
+              <DatePicker value={exportFrom} onChange={setExportFrom} placeholder="Startdatum" />
+            </div>
+            <div style={{ flex: "1 1 180px" }}>
+              <label style={labelStyle}>Bis</label>
+              <DatePicker value={exportTo} onChange={setExportTo} placeholder="Enddatum" />
+            </div>
+          </div>
+          {exportErr && <div style={{ color: COLORS.coral, fontSize: 12.5, marginBottom: 10 }}>{exportErr}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => setShowExport(false)} style={ghostBtn}>Abbrechen</button>
+            <button onClick={runExport} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 7 }}>
+              <Download size={14} /> Als Markdown exportieren
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.04em" }}>Woche</span>
@@ -3236,6 +3402,18 @@ function TaskRow({ task, onToggle, onEdit }) {
    EINSTELLUNGEN / DATENSICHERUNG
    Export als JSON-Download, Import mit Vorschau + Bestätigung
    ============================================================ */
+function downloadFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function downloadJSON(filename, obj) {
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
