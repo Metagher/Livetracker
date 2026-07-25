@@ -2037,31 +2037,31 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
         <SectionLabel>Punkte pro Tag (letzte 30 Tage)</SectionLabel>
         <div style={{ overflowX: "auto", paddingBottom: 4 }}>
-          <div style={{ display: "flex", gap: isMobile ? 3 : 4, alignItems: "stretch", height: 168, minWidth: last30Breakdown.length * (isMobile ? 12 : 16) }}>
+          <div style={{ display: "flex", gap: isMobile ? 3 : 4, alignItems: "flex-start", height: 138, minWidth: last30Breakdown.length * (isMobile ? 12 : 16) }}>
             {last30Breakdown.map((d, i) => {
               const hasSources = d.habitLines.length > 0 || d.goalLines.length > 0 || d.taskLines.length > 0;
               const barColor = d.points > 0 ? COLORS.mint : d.points < 0 ? COLORS.coral : COLORS.borderSoft;
-              const barPct = Math.min(100, Math.round((Math.abs(d.points) / maxAbsDayPoints) * 100));
               const showLabel = i % 5 === 0 || i === last30Breakdown.length - 1;
               const isRightSide = i > last30Breakdown.length * 0.7;
               return (
-                <div key={d.key} style={{ flex: "1 0 auto", minWidth: isMobile ? 12 : 16, display: "flex", flexDirection: "column", position: "relative" }}>
+                <div key={d.key} style={{ flex: "1 0 auto", minWidth: isMobile ? 12 : 16, position: "relative" }}>
                   <div
                     onMouseEnter={() => hasSources && setHoveredDay(d.key)}
                     onMouseLeave={() => setHoveredDay((h) => (h === d.key ? null : h))}
                     onClick={() => hasSources && setHoveredDay((h) => (h === d.key ? null : d.key))}
-                    style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", cursor: hasSources ? "pointer" : "default", padding: "0 1px" }}
+                    style={{ height: 120, position: "relative", cursor: hasSources ? "pointer" : "default" }}
                   >
-                    {/* obere Hälfte: positive Balken wachsen nach oben */}
-                    <div style={{ flex: 1, display: "flex", alignItems: "flex-end" }}>
-                      {d.points > 0 && <div style={{ width: "100%", height: `${barPct}%`, background: barColor, borderRadius: "3px 3px 0 0", opacity: hoveredDay === d.key ? 1 : 0.85 }} />}
-                    </div>
-                    {/* Nulllinie */}
-                    <div style={{ height: 1, background: COLORS.borderSoft }} />
-                    {/* untere Hälfte: negative Balken wachsen nach unten */}
-                    <div style={{ flex: 1, display: "flex", alignItems: "flex-start" }}>
-                      {d.points < 0 && <div style={{ width: "100%", height: `${barPct}%`, background: barColor, borderRadius: "0 0 3px 3px", opacity: hoveredDay === d.key ? 1 : 0.85 }} />}
-                    </div>
+                    <div style={{ position: "absolute", left: 0, right: 0, top: 60, height: 1, background: COLORS.borderSoft }} />
+                    {d.points !== 0 && (
+                      <div style={{
+                        position: "absolute", left: 1, right: 1,
+                        top: d.points > 0 ? 60 - Math.round((Math.abs(d.points) / maxAbsDayPoints) * 58) : 61,
+                        height: Math.max(2, Math.round((Math.abs(d.points) / maxAbsDayPoints) * 58)),
+                        background: barColor,
+                        borderRadius: d.points > 0 ? "3px 3px 0 0" : "0 0 3px 3px",
+                        opacity: hoveredDay === d.key ? 1 : 0.85,
+                      }} />
+                    )}
                   </div>
                   <div style={{ fontSize: 9, color: COLORS.textFaint, textAlign: "center", marginTop: 4, height: 12 }}>
                     {showLabel ? d.date : ""}
@@ -3634,12 +3634,12 @@ function useIsMobile() {
 function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing }) {
   const items = [
     { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
+    { key: "progress", label: "Fortschritt", Icon: TrendingUp },
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
     { key: "journal", label: "Journal", Icon: BookOpen },
     { key: "coach", label: "Coach", Icon: Brain },
-    { key: "progress", label: "Fortschritt", Icon: TrendingUp },
     { key: "settings", label: "Einstellungen", Icon: Settings },
   ];
   return (
@@ -3689,12 +3689,12 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing }) {
 function BottomNav({ page, setPage }) {
   const items = [
     { key: "dashboard", label: "Home", Icon: LayoutDashboard },
+    { key: "progress", label: "Verlauf", Icon: TrendingUp },
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
     { key: "journal", label: "Journal", Icon: BookOpen },
     { key: "coach", label: "Coach", Icon: Brain },
-    { key: "progress", label: "Verlauf", Icon: TrendingUp },
     { key: "settings", label: "Settings", Icon: Settings },
   ];
   return (
