@@ -32,7 +32,7 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle, RefreshCw
+  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -282,6 +282,25 @@ function goalPointsInRange(goals, dateKeys) {
 
 // Punkte aus erledigten Tasks - zählen genauso zu den Gesamtpunkten wie
 // Habit- und Ziel-Punkte, gutgeschrieben am Tag der Erledigung
+// Krönchen-Kennzeichnung für Aufgaben mit hoher Punktzahl
+function crownCount(points) {
+  if (points >= 20) return 3;
+  if (points >= 10) return 2;
+  if (points >= 5) return 1;
+  return 0;
+}
+function CrownBadge({ points, size = 10 }) {
+  const count = crownCount(points);
+  if (count === 0) return null;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 1 }} title={`${points} Punkte`}>
+      {Array.from({ length: count }).map((_, i) => (
+        <Crown key={i} size={size} style={{ color: "#FFC15E", fill: "#FFC15E" }} />
+      ))}
+    </span>
+  );
+}
+
 function totalTaskPoints(tasks) {
   return (tasks || []).filter((t) => t.completed).reduce((s, t) => s + t.points, 0);
 }
@@ -508,6 +527,7 @@ function useLifeOSData() {
   const [weeklyReports, setWeeklyReports] = useState({});
   const [goals, setGoals] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -515,7 +535,7 @@ function useLifeOSData() {
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const [h, e, a, c, j, w, g, t] = await Promise.allSettled([
+      const [h, e, a, c, j, w, g, t, cat] = await Promise.allSettled([
         window.storage.get("los-habits"),
         window.storage.get("los-entries"),
         window.storage.get("los-achievements"),
@@ -524,6 +544,7 @@ function useLifeOSData() {
         window.storage.get("los-weekly-reports"),
         window.storage.get("los-goals"),
         window.storage.get("los-tasks"),
+        window.storage.get("los-categories"),
       ]);
       setHabits(h.status === "fulfilled" && h.value ? JSON.parse(h.value.value) : []);
       setEntries(e.status === "fulfilled" && e.value ? JSON.parse(e.value.value) : {});
@@ -533,6 +554,7 @@ function useLifeOSData() {
       setWeeklyReports(w.status === "fulfilled" && w.value ? JSON.parse(w.value.value) : {});
       setGoals(g.status === "fulfilled" && g.value ? JSON.parse(g.value.value) : []);
       setTasks(t.status === "fulfilled" && t.value ? JSON.parse(t.value.value) : []);
+      setCategories(cat.status === "fulfilled" && cat.value ? JSON.parse(cat.value.value) : []);
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -581,10 +603,14 @@ function useLifeOSData() {
     setTasks(next);
     try { await window.storage.set("los-tasks", JSON.stringify(next)); } catch {}
   }, []);
+  const persistCategories = useCallback(async (next) => {
+    setCategories(next);
+    try { await window.storage.set("los-categories", JSON.stringify(next)); } catch {}
+  }, []);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, categories, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistCategories,
     refresh,
   };
 }
@@ -657,7 +683,7 @@ function Confetti({ trigger }) {
 /* ============================================================
    HABIT MODAL (Create / Edit)
    ============================================================ */
-function HabitModal({ initial, onClose, onSave, onDelete, goals }) {
+function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onAddCategory }) {
   const [name, setName] = useState(initial?.name || "");
   const [description, setDescription] = useState(initial?.description || "");
   const [color, setColor] = useState(initial?.color || HABIT_COLORS[0]);
@@ -693,7 +719,9 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals }) {
         <input style={inputStyle} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Was bedeutet dir dieses Habit? (dein Coach nutzt das)" />
 
         <label style={labelStyle}>Kategorie (optional)</label>
-        <input style={inputStyle} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="z. B. Gesundheit" />
+        <div style={{ marginBottom: 14 }}>
+          <CategoryPicker value={category} categories={categories || []} onChange={setCategory} onAddCategory={onAddCategory} />
+        </div>
 
         {goals && goals.filter((g) => !g.achieved).length > 0 && (
           <>
@@ -819,6 +847,52 @@ function ToggleChip({ active, onClick, children, accent = COLORS.violet }) {
   );
 }
 
+/* ============================================================
+   CATEGORY PICKER
+   Zentrale Kategorie-Auswahl für Habits, Tasks und Goals.
+   Neue Kategorien werden direkt in die zentrale Liste übernommen.
+   ============================================================ */
+function CategoryPicker({ value, categories, onChange, onAddCategory }) {
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+
+  const confirmAdd = () => {
+    const trimmed = newName.trim();
+    setAdding(false);
+    setNewName("");
+    if (!trimmed) return;
+    if (!categories.includes(trimmed)) onAddCategory(trimmed);
+    onChange(trimmed);
+  };
+
+  if (adding) {
+    return (
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <input
+          autoFocus style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+          value={newName} onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") confirmAdd(); if (e.key === "Escape") { setAdding(false); setNewName(""); } }}
+          placeholder="Name der neuen Kategorie"
+        />
+        <button type="button" onClick={confirmAdd} style={primaryBtn}>OK</button>
+        <button type="button" onClick={() => { setAdding(false); setNewName(""); }} style={ghostBtn}>Abbrechen</button>
+      </div>
+    );
+  }
+
+  return (
+    <select
+      value={value || ""}
+      onChange={(e) => (e.target.value === "__new__" ? setAdding(true) : onChange(e.target.value))}
+      style={{ ...inputStyle, cursor: "pointer" }}
+    >
+      <option value="">Ohne Kategorie</option>
+      {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+      <option value="__new__">+ Neue Kategorie…</option>
+    </select>
+  );
+}
+
 const overlayStyle = {
   position: "fixed", inset: 0, background: "rgba(10,10,12,0.6)", backdropFilter: "blur(3px)",
   display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 12,
@@ -846,9 +920,10 @@ const ghostBtn = {
 /* ============================================================
    GOAL MODAL (Create / Edit)
    ============================================================ */
-function GoalModal({ initial, onClose, onSave, onDelete }) {
+function GoalModal({ initial, onClose, onSave, onDelete, categories, onAddCategory }) {
   const [title, setTitle] = useState(initial?.title || "");
   const [description, setDescription] = useState(initial?.description || "");
+  const [category, setCategory] = useState(initial?.category || "");
   const [points, setPoints] = useState(initial?.points ?? 100);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -878,6 +953,11 @@ function GoalModal({ initial, onClose, onSave, onDelete }) {
         <label style={labelStyle}>Punkte bei Erfüllung</label>
         <input type="number" min={1} style={inputStyle} value={points} onChange={(e) => setPoints(Number(e.target.value))} />
 
+        <label style={labelStyle}>Kategorie (optional)</label>
+        <div style={{ marginBottom: 14 }}>
+          <CategoryPicker value={category} categories={categories || []} onChange={setCategory} onAddCategory={onAddCategory} />
+        </div>
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
           {initial ? (
             <button onClick={() => (confirmDelete ? onDelete(initial.id) : setConfirmDelete(true))} style={{
@@ -894,7 +974,7 @@ function GoalModal({ initial, onClose, onSave, onDelete }) {
               disabled={!canSave}
               onClick={() => onSave({
                 id: initial?.id || `goal_${Date.now()}`,
-                title: title.trim(), description: description.trim(), points: Number(points) || 1,
+                title: title.trim(), description: description.trim(), category: category.trim(), points: Number(points) || 1,
                 achieved: initial?.achieved || false,
                 achievedAt: initial?.achievedAt || null,
                 createdAt: initial?.createdAt || todayKey(),
@@ -1032,7 +1112,7 @@ function DatePicker({ value, onChange, placeholder = "Datum wählen" }) {
   );
 }
 
-function TaskModal({ initial, onClose, onSave, onDelete, categoryOptions }) {
+function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCategory }) {
   const [title, setTitle] = useState(initial?.title || "");
   const [content, setContent] = useState(initial?.content || "");
   const [category, setCategory] = useState(initial?.category || "");
@@ -1064,17 +1144,19 @@ function TaskModal({ initial, onClose, onSave, onDelete, categoryOptions }) {
         />
 
         <label style={labelStyle}>Kategorie (optional)</label>
-        <input
-          style={inputStyle} value={category} onChange={(e) => setCategory(e.target.value)}
-          placeholder="z. B. Gesundheit (gleiche Kategorien wie bei Habits)" list="task-category-options"
-        />
-        <datalist id="task-category-options">
-          {(categoryOptions || []).map((c) => <option key={c} value={c} />)}
-        </datalist>
+        <div style={{ marginBottom: 14 }}>
+          <CategoryPicker value={category} categories={categories || []} onChange={setCategory} onAddCategory={onAddCategory} />
+        </div>
 
         <label style={labelStyle}>Punkte bei Erledigung</label>
-        <input type="number" min={1} style={inputStyle} value={points} onChange={(e) => setPoints(Number(e.target.value))} />
-
+        <input type="number" min={1} style={{ ...inputStyle, marginBottom: 6 }} value={points} onChange={(e) => setPoints(Number(e.target.value))} />
+        <div style={{ marginBottom: 14, minHeight: 14 }}>
+          {crownCount(points) > 0 && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: COLORS.textFaint }}>
+              <CrownBadge points={points} size={12} /> ab {crownCount(points) === 1 ? "5" : crownCount(points) === 2 ? "10" : "20"} Punkten
+            </span>
+          )}
+        </div>
         <label style={labelStyle}>Datum (optional)</label>
         <DatePicker value={dueDate} onChange={setDueDate} placeholder="Kein Datum" />
 
@@ -1120,6 +1202,7 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
   const Icon = iconFor(habit.icon);
   const status = dayStatus(habit, entries, todayKey());
   const isDone = status === "success";
+  const isFailed = status === "fail";
   const dotCount = isMobile ? 7 : 14;
   const last14 = useMemo(() => {
     const days = [];
@@ -1133,6 +1216,9 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
     } else {
       onOpenDetail(habit);
     }
+  };
+  const handleFail = () => {
+    onToggle(habit.id, todayKey(), isFailed ? undefined : false);
   };
 
   return (
@@ -1194,6 +1280,18 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
           <div style={{ fontSize: 11, color: COLORS.textFaint }}>Erfolgsquote</div>
           <div style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.textMuted }}>{stats.successRate}%</div>
         </div>
+      )}
+
+      {habit.trackingType === "boolean" && (
+        <button onClick={handleFail} style={{
+          width: 38, height: 38, borderRadius: "50%", flexShrink: 0, cursor: "pointer",
+          border: isFailed ? "none" : `1.5px solid ${COLORS.border}`,
+          background: isFailed ? `linear-gradient(135deg, ${COLORS.coral}, #E14D72)` : "transparent",
+          color: isFailed ? "#2B0810" : COLORS.textMuted,
+          display: "flex", alignItems: "center", justifyContent: "center", transition: "all .15s",
+        }}>
+          <X size={18} strokeWidth={2.8} />
+        </button>
       )}
 
       <button onClick={handleClick} style={{
@@ -1769,7 +1867,9 @@ function DashTaskRow({ task, onComplete, highlight }) {
           {shortDate(task.dueDate)}
         </span>
       )}
-      <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.ember2, fontFamily: "JetBrains Mono, monospace", flexShrink: 0 }}>{task.points} Pkt.</span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.ember2, fontFamily: "JetBrains Mono, monospace", flexShrink: 0, display: "flex", alignItems: "center", gap: 3 }}>
+        {task.points} Pkt. <CrownBadge points={task.points} size={9} />
+      </span>
     </div>
   );
 }
@@ -1894,9 +1994,15 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
           map[cat] = (map[cat] || 0) + t.points;
         }
       });
+      (goals || []).forEach((g) => {
+        if (g.achieved && g.achievedAt && g.achievedAt.startsWith(prefix)) {
+          const cat = categoryOf(g);
+          map[cat] = (map[cat] || 0) + g.points;
+        }
+      });
       return Object.entries(map).map(([category, points]) => ({ category, points })).sort((a, b) => b.points - a.points);
     });
-  }, [active, allStats, tasks, viewYear]);
+  }, [active, allStats, tasks, goals, viewYear]);
   const [hoveredMonth, setHoveredMonth] = useState(null);
 
   const achievedGoals = (goals || []).filter((g) => g.achieved).sort((a, b) => (b.achievedAt || "").localeCompare(a.achievedAt || ""));
@@ -2850,7 +2956,7 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks })
    Langfristige Ziele mit Beschreibung und Punktebelohnung bei
    Erfüllung. Werden dem Coach als Kontext für die Habits gegeben.
    ============================================================ */
-function GoalsPage({ goals, persistGoals, habits, entries }) {
+function GoalsPage({ goals, persistGoals, habits, entries, categories, onAddCategory }) {
   const [showModal, setShowModal] = useState(false);
   const [modalGoal, setModalGoal] = useState(undefined);
 
@@ -2933,10 +3039,20 @@ function GoalsPage({ goals, persistGoals, habits, entries }) {
           {openGoals.length > 0 && (
             <div style={{ marginBottom: 22 }}>
               <SectionLabel>Offen</SectionLabel>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {openGoals.map((g) => (
-                  <GoalRow key={g.id} goal={g} onToggle={() => toggleAchieved(g)} onEdit={() => { setModalGoal(g); setShowModal(true); }}
-                    linkedHabits={linkedHabitsByGoal[g.id] || []} weekSeries={weekDataByGoal[g.id]?.series || []} weekTotal={weekDataByGoal[g.id]?.total || 0} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+                {groupHabitsByCategory(openGoals).map(({ category, habits: groupGoals }) => (
+                  <div key={category}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryColor(category) }} />
+                      <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>{category}</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {groupGoals.map((g) => (
+                        <GoalRow key={g.id} goal={g} onToggle={() => toggleAchieved(g)} onEdit={() => { setModalGoal(g); setShowModal(true); }}
+                          linkedHabits={linkedHabitsByGoal[g.id] || []} weekSeries={weekDataByGoal[g.id]?.series || []} weekTotal={weekDataByGoal[g.id]?.total || 0} />
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -2944,10 +3060,20 @@ function GoalsPage({ goals, persistGoals, habits, entries }) {
           {doneGoals.length > 0 && (
             <div>
               <SectionLabel>Erreicht</SectionLabel>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {doneGoals.map((g) => (
-                  <GoalRow key={g.id} goal={g} onToggle={() => toggleAchieved(g)} onEdit={() => { setModalGoal(g); setShowModal(true); }}
-                    linkedHabits={linkedHabitsByGoal[g.id] || []} weekSeries={weekDataByGoal[g.id]?.series || []} weekTotal={weekDataByGoal[g.id]?.total || 0} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+                {groupHabitsByCategory(doneGoals).map(({ category, habits: groupGoals }) => (
+                  <div key={category}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryColor(category) }} />
+                      <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>{category}</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {groupGoals.map((g) => (
+                        <GoalRow key={g.id} goal={g} onToggle={() => toggleAchieved(g)} onEdit={() => { setModalGoal(g); setShowModal(true); }}
+                          linkedHabits={linkedHabitsByGoal[g.id] || []} weekSeries={weekDataByGoal[g.id]?.series || []} weekTotal={weekDataByGoal[g.id]?.total || 0} />
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -2958,6 +3084,8 @@ function GoalsPage({ goals, persistGoals, habits, entries }) {
       {showModal && (
         <GoalModal
           initial={modalGoal}
+          categories={categories}
+          onAddCategory={onAddCategory}
           onClose={() => { setShowModal(false); setModalGoal(undefined); }}
           onSave={handleSave}
           onDelete={handleDelete}
@@ -3045,19 +3173,12 @@ function GoalRow({ goal, onToggle, onEdit, linkedHabits, weekSeries, weekTotal }
    TASKS
    Einfache Aufgabenverwaltung mit Punktebelohnung bei Erledigung
    ============================================================ */
-function TasksPage({ tasks, persistTasks, habits }) {
+function TasksPage({ tasks, persistTasks, categories, onAddCategory }) {
   const [showModal, setShowModal] = useState(false);
   const [modalTask, setModalTask] = useState(undefined);
 
   const doneCount = tasks.filter((t) => t.completed).length;
   const earnedPoints = tasks.filter((t) => t.completed).reduce((s, t) => s + t.points, 0);
-
-  const categoryOptions = useMemo(() => {
-    const cats = new Set();
-    (habits || []).forEach((h) => { if ((h.category || "").trim()) cats.add(h.category.trim()); });
-    (tasks || []).forEach((t) => { if ((t.category || "").trim()) cats.add(t.category.trim()); });
-    return Array.from(cats).sort((a, b) => a.localeCompare(b, "de"));
-  }, [habits, tasks]);
 
   const toggleCompleted = (task) => {
     const next = tasks.map((t) => t.id === task.id
@@ -3143,7 +3264,8 @@ function TasksPage({ tasks, persistTasks, habits }) {
       {showModal && (
         <TaskModal
           initial={modalTask}
-          categoryOptions={categoryOptions}
+          categories={categories}
+          onAddCategory={onAddCategory}
           onClose={() => { setShowModal(false); setModalTask(undefined); }}
           onSave={handleSave}
           onDelete={handleDelete}
@@ -3270,8 +3392,9 @@ function TaskRow({ task, onToggle, onEdit }) {
           <span style={{
             fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 6,
             color: COLORS.ember2, background: COLORS.ember2 + "1a",
+            display: "flex", alignItems: "center", gap: 4,
           }}>
-            {task.points} Pkt.
+            {task.points} Pkt. <CrownBadge points={task.points} />
           </span>
           {task.dueDate && !task.completed && (
             <span style={{
@@ -3323,8 +3446,8 @@ function downloadJSON(filename, obj) {
 }
 
 function SettingsPage({
-  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks,
-  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks,
+  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, categories,
+  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistCategories,
 }) {
   const fileInputRef = useRef(null);
   const [pendingImport, setPendingImport] = useState(null);
@@ -3452,10 +3575,106 @@ function SettingsPage({
         )}
       </div>
 
+      <CategoryManager
+        categories={categories} persistCategories={persistCategories}
+        habits={habits} tasks={tasks} goals={goals}
+        persistHabits={persistHabits} persistTasks={persistTasks} persistGoals={persistGoals}
+      />
+
       <ConnectionSettings />
     </div>
   );
 }
+
+function CategoryManager({ categories, persistCategories, habits, tasks, goals, persistHabits, persistTasks, persistGoals }) {
+  const [newCat, setNewCat] = useState("");
+  const [renaming, setRenaming] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const addCategory = () => {
+    const trimmed = newCat.trim();
+    setNewCat("");
+    if (!trimmed || categories.includes(trimmed)) return;
+    persistCategories([...categories, trimmed]);
+  };
+
+  const startRename = (cat) => { setRenaming(cat); setRenameValue(cat); };
+  const confirmRename = () => {
+    const trimmed = renameValue.trim();
+    setRenaming(null);
+    if (!trimmed || trimmed === renaming) return;
+    persistCategories(categories.map((c) => (c === renaming ? trimmed : c)));
+    persistHabits(habits.map((h) => (h.category === renaming ? { ...h, category: trimmed } : h)));
+    persistTasks(tasks.map((t) => (t.category === renaming ? { ...t, category: trimmed } : t)));
+    persistGoals(goals.map((g) => (g.category === renaming ? { ...g, category: trimmed } : g)));
+  };
+
+  const deleteCategory = (cat) => {
+    persistCategories(categories.filter((c) => c !== cat));
+    setConfirmDelete(null);
+  };
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginTop: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", background: COLORS.mint + "1f" }}>
+          <ListChecks size={15} style={{ color: COLORS.mint }} />
+        </div>
+        <span style={{ fontWeight: 700, fontSize: 14.5 }}>Kategorien verwalten</span>
+      </div>
+      <p style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+        Zentrale Liste der Kategorien für Habits, Aufgaben und Ziele. Umbenennen aktualisiert automatisch alle Einträge, die diese Kategorie nutzen.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <input
+          style={{ ...inputStyle, marginBottom: 0, flex: 1 }} value={newCat}
+          onChange={(e) => setNewCat(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addCategory(); }}
+          placeholder="Neue Kategorie"
+        />
+        <button onClick={addCategory} style={primaryBtn}>Hinzufügen</button>
+      </div>
+
+      {categories.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Kategorien angelegt.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {categories.map((cat) => (
+            <div key={cat} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: COLORS.bgSoft, borderRadius: 9 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: categoryColor(cat), flexShrink: 0 }} />
+              {renaming === cat ? (
+                <>
+                  <input
+                    autoFocus style={{ ...inputStyle, marginBottom: 0, flex: 1 }} value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") confirmRename(); if (e.key === "Escape") setRenaming(null); }}
+                  />
+                  <button onClick={confirmRename} style={{ ...primaryBtn, padding: "6px 12px" }}>OK</button>
+                  <button onClick={() => setRenaming(null)} style={{ ...ghostBtn, padding: "6px 12px" }}>Abbrechen</button>
+                </>
+              ) : (
+                <>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{cat}</span>
+                  <IconButton onClick={() => startRename(cat)} title="Umbenennen"><Pencil size={13} /></IconButton>
+                  {confirmDelete === cat ? (
+                    <button onClick={() => deleteCategory(cat)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 11.5, color: COLORS.coral, border: `1px solid ${COLORS.coral}` }}>
+                      Wirklich löschen?
+                    </button>
+                  ) : (
+                    <IconButton onClick={() => setConfirmDelete(cat)} title="Löschen" danger><Trash2 size={13} /></IconButton>
+                  )}
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function ConnectionSettings() {
   const existing = getConfig() || {};
@@ -3656,11 +3875,15 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
 
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, categories, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistCategories,
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
+  const addCategory = (name) => {
+    if (!name || categories.includes(name)) return;
+    persistCategories([...categories, name]);
+  };
   const [page, setPage] = useState("dashboard");
   const [modalHabit, setModalHabit] = useState(undefined);
   const [showModal, setShowModal] = useState(false);
@@ -3823,15 +4046,15 @@ export default function LifeOS() {
           {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} />}
           {page === "coach" && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
           {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} />}
-          {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} entries={entries} />}
-          {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} habits={habits} />}
+          {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} entries={entries} categories={categories} onAddCategory={addCategory} />}
+          {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "settings" && (
             <SettingsPage
               habits={habits} entries={entries} achievements={achievements} coach={coach}
-              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks}
+              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} categories={categories}
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
               persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
-              persistGoals={persistGoals} persistTasks={persistTasks}
+              persistGoals={persistGoals} persistTasks={persistTasks} persistCategories={persistCategories}
             />
           )}
         </div>
@@ -3841,6 +4064,8 @@ export default function LifeOS() {
         <HabitModal
           initial={modalHabit}
           goals={goals}
+          categories={categories}
+          onAddCategory={addCategory}
           onClose={() => { setShowModal(false); setModalHabit(undefined); }}
           onSave={handleSaveHabit}
           onDelete={handleDeleteHabit}
