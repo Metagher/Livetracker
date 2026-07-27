@@ -71,7 +71,7 @@ function getAnthropicKey() {
 
 /* ============================================================
    STORAGE-SHIM: ersetzt Claudes window.storage 1:1 durch
-   Aufrufe an eine Supabase-Tabelle "kv_store" (key/value/updated_at).
+   Aufrufe an eine Supabase-Tabelle "lifetracker_kv_store" (key/value/updated_at).
    Dieselbe Schnittstelle (get/set liefern {key, value}) wie zuvor,
    damit der komplette App-Code unverändert bleibt.
    ============================================================ */
@@ -81,7 +81,7 @@ function installStorageShim() {
       const cfg = getConfig();
       if (!cfg?.supabaseUrl || !cfg?.supabaseKey) throw new Error("Nicht konfiguriert");
       const res = await fetch(
-        `${cfg.supabaseUrl}/rest/v1/kv_store?key=eq.${encodeURIComponent(key)}&select=value`,
+        `${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store?key=eq.${encodeURIComponent(key)}&select=value`,
         { headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}` } }
       );
       if (!res.ok) throw new Error("Supabase-Fehler: " + res.status);
@@ -92,7 +92,7 @@ function installStorageShim() {
     set: async (key, value) => {
       const cfg = getConfig();
       if (!cfg?.supabaseUrl || !cfg?.supabaseKey) throw new Error("Nicht konfiguriert");
-      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/kv_store`, {
+      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store`, {
         method: "POST",
         headers: {
           apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}`,
@@ -107,7 +107,7 @@ function installStorageShim() {
     },
     delete: async (key) => {
       const cfg = getConfig();
-      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/kv_store?key=eq.${encodeURIComponent(key)}`, {
+      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store?key=eq.${encodeURIComponent(key)}`, {
         method: "DELETE",
         headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}` },
       });
@@ -116,7 +116,7 @@ function installStorageShim() {
     list: async (prefix) => {
       const cfg = getConfig();
       const q = prefix ? `&key=like.${encodeURIComponent(prefix)}*` : "";
-      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/kv_store?select=key${q}`, {
+      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store?select=key${q}`, {
         headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}` },
       });
       const rows = res.ok ? await res.json() : [];
@@ -145,10 +145,10 @@ function SetupGate({ children }) {
     setTestErr(null);
     try {
       const cleanUrl = normalizeSupabaseUrl(supabaseUrl);
-      const res = await fetch(`${cleanUrl}/rest/v1/kv_store?select=key&limit=1`, {
+      const res = await fetch(`${cleanUrl}/rest/v1/lifetracker_kv_store?select=key&limit=1`, {
         headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
       });
-      if (!res.ok) throw new Error("Verbindung fehlgeschlagen (" + res.status + "). Prüfe URL/Key und ob die Tabelle kv_store existiert.");
+      if (!res.ok) throw new Error("Verbindung fehlgeschlagen (" + res.status + "). Prüfe URL/Key und ob die Tabelle lifetracker_kv_store existiert.");
       const next = { supabaseUrl: cleanUrl, supabaseKey, anthropicKey };
       setConfig(next);
       setCfgState(next);
@@ -195,7 +195,7 @@ function SetupGate({ children }) {
         </button>
 
         <p style={{ fontSize: 11.5, color: "#5B5D68", marginTop: 16, lineHeight: 1.6 }}>
-          Anleitung: supabase.com → kostenloses Projekt anlegen → SQL-Editor → Tabelle "kv_store" mit Spalten
+          Anleitung: supabase.com → kostenloses Projekt anlegen → SQL-Editor → Tabelle "lifetracker_kv_store" mit Spalten
           key (text, primary key), value (text), updated_at (timestamptz) anlegen → Row Level Security für diese Tabelle
           deaktivieren (nur für den Eigengebrauch!) → URL und "anon public" Key aus Project Settings → API hier eintragen.
         </p>
