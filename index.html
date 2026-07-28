@@ -856,7 +856,7 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
           ))}
         </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={modalFooterStyle}>
           {initial ? (
             <button onClick={() => (confirmDelete ? onDelete(initial.id) : setConfirmDelete(true))} style={{
               ...ghostBtn, color: COLORS.coral, display: "flex", alignItems: "center", gap: 6,
@@ -957,6 +957,13 @@ const modalStyle = {
   boxShadow: "0 30px 60px rgba(0,0,0,0.5)",
 };
 const labelStyle = { display: "block", fontSize: 11.5, fontWeight: 600, color: COLORS.textMuted, marginBottom: 6, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.04em" };
+// Bleibt beim Scrollen am unteren Rand des Modals kleben, damit Speichern/Abbrechen
+// immer erreichbar sind - auch bei langen Formularen oder eingeblendeter Tastatur.
+const modalFooterStyle = {
+  display: "flex", justifyContent: "space-between", alignItems: "center",
+  position: "sticky", bottom: 0, marginTop: 10, padding: "14px 0 0",
+  background: COLORS.surface, borderTop: `1px solid ${COLORS.borderSoft}`,
+};
 const inputStyle = {
   width: "100%", padding: "10px 12px", borderRadius: 9, border: `1px solid ${COLORS.border}`,
   background: COLORS.bgSoft, color: COLORS.text, fontSize: 14, marginBottom: 14, outline: "none", fontFamily: "Inter, sans-serif",
@@ -1012,7 +1019,7 @@ function GoalModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
           <CategoryPicker value={category} categories={categories || []} onChange={setCategory} onAddCategory={onAddCategory} />
         </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+        <div style={modalFooterStyle}>
           {initial ? (
             <button onClick={() => (confirmDelete ? onDelete(initial.id) : setConfirmDelete(true))} style={{
               ...ghostBtn, color: COLORS.coral, display: "flex", alignItems: "center", gap: 6,
@@ -1214,7 +1221,7 @@ function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
         <label style={labelStyle}>Datum (optional)</label>
         <DatePicker value={dueDate} onChange={setDueDate} placeholder="Kein Datum" />
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+        <div style={modalFooterStyle}>
           {initial ? (
             <button onClick={() => (confirmDelete ? onDelete(initial.id) : setConfirmDelete(true))} style={{
               ...ghostBtn, color: COLORS.coral, display: "flex", alignItems: "center", gap: 6,
