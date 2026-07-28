@@ -95,6 +95,7 @@ import {
 import ReactDOM from "react-dom/client";
 
 /* ============================================================
+   @section CONFIG — Supabase/Anthropic-Zugangsdaten (localStorage, pro Gerät)
    STANDALONE-KONFIGURATION (Supabase + Anthropic API-Key)
    Wird einmalig über den Setup-Screen abgefragt und lokal im
    Browser (localStorage) auf DIESEM Gerät gespeichert. Diese
@@ -124,6 +125,7 @@ function getAnthropicKey() {
 }
 
 /* ============================================================
+   @section STORAGE-SHIM — window.storage-Ersatz über Supabase REST (KV-Tabelle)
    STORAGE-SHIM: ersetzt Claudes window.storage 1:1 durch
    Aufrufe an eine Supabase-Tabelle "lifetracker_kv_store" (key/value/updated_at).
    Dieselbe Schnittstelle (get/set liefern {key, value}) wie zuvor,
@@ -181,6 +183,7 @@ function installStorageShim() {
 installStorageShim();
 
 /* ============================================================
+   @section SETUP-GATE — Einmaliger Einrichtungsscreen vor App-Start
    SETUP-SCREEN: fragt Supabase- und Anthropic-Zugangsdaten ab,
    bevor die eigentliche App startet.
    ============================================================ */
@@ -259,6 +262,7 @@ function SetupGate({ children }) {
 }
 
 /* ============================================================
+   @section DESIGN-TOKENS — Farben, Fonts, Icon-/Habit-Farbpalette
    DESIGN TOKENS
    Bg: warm charcoal (nicht reines Schwarz) · Ember-Akzent für Streaks
    Serif-Ziffern (Fraunces) für große Kennzahlen, Inter für UI,
@@ -294,6 +298,9 @@ const ICONS = [
   { key: "music", Icon: Music }, { key: "pen", Icon: Pen },
   { key: "code", Icon: Code }, { key: "heart", Icon: Heart },
 ];
+/* ============================================================
+   @section POINTS-HELPERS — Icon-/Kategorie-Zuordnung, Goal-/Task-Punktesummen
+   ============================================================ */
 const iconFor = (key) => (ICONS.find((i) => i.key === key) || ICONS[0]).Icon;
 
 const UNCATEGORIZED = "Ohne Kategorie";
@@ -366,7 +373,7 @@ function taskPointsInRange(tasks, dateKeys) {
 }
 
 /* ============================================================
-   DATE HELPERS
+   @section DATE-HELPERS — Datumsformatierung, Wochen-/Monatsgrenzen, ISO-Kalenderwoche
    ============================================================ */
 const pad = (n) => String(n).padStart(2, "0");
 const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -397,7 +404,7 @@ function isoWeekNumber(d) {
 }
 
 /* ============================================================
-   POINTS / STREAK ENGINE
+   @section POINTS-ENGINE — Streak-/Punkteberechnung inkl. Meilenstein-Boni (simulateHabit)
    ============================================================ */
 const DIFFICULTY_BASE = { leicht: 2, mittel: 5, schwer: 10 };
 const DIFFICULTY_LABELS = { leicht: "Leicht", mittel: "Mittel", schwer: "Schwer" };
@@ -544,7 +551,7 @@ function simulateHabit(habit, entries, untilKey) {
 }
 
 /* ============================================================
-   ACHIEVEMENTS
+   @section ACHIEVEMENTS — Erfolgs-Definitionen + Bestleistungs-Erkennung (Fenster-Summen)
    ============================================================ */
 const ACHIEVEMENT_DEFS = [
   { id: "best", icon: Trophy, color: COLORS.ember2, label: "Neue persönliche Bestleistung" },
@@ -570,7 +577,7 @@ function lastWindowSum(dailyTotals, size) {
 }
 
 /* ============================================================
-   PERSISTENT STORAGE HOOK
+   @section DATA-HOOK — useLifeOSData: lädt/persistiert alle App-Daten über window.storage
    ============================================================ */
 function useLifeOSData() {
   const [habits, setHabits] = useState([]);
@@ -670,7 +677,7 @@ function useLifeOSData() {
 }
 
 /* ============================================================
-   SMALL UI PRIMITIVES
+   @section UI-PRIMITIVES — IconButton, EmberDot & andere kleine Bausteine
    ============================================================ */
 function IconButton({ children, onClick, title, danger }) {
   return (
@@ -706,7 +713,7 @@ function EmberDot({ level, size = 9, negative = false }) {
 }
 
 /* ============================================================
-   CONFETTI
+   @section CONFETTI — Feier-Animation beim Abhaken eines Habits
    ============================================================ */
 function Confetti({ trigger }) {
   const pieces = useMemo(() => Array.from({ length: 26 }, (_, i) => ({
@@ -735,6 +742,7 @@ function Confetti({ trigger }) {
 }
 
 /* ============================================================
+   @section HABIT-MODAL — Anlegen/Bearbeiten eines Habits
    HABIT MODAL (Create / Edit)
    ============================================================ */
 function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onAddCategory }) {
@@ -902,6 +910,7 @@ function ToggleChip({ active, onClick, children, accent = COLORS.violet }) {
 }
 
 /* ============================================================
+   @section CATEGORY-PICKER — geteilte Kategorie-Auswahl für Habits/Tasks/Goals
    CATEGORY PICKER
    Zentrale Kategorie-Auswahl für Habits, Tasks und Goals.
    Neue Kategorien werden direkt in die zentrale Liste übernommen.
@@ -947,6 +956,9 @@ function CategoryPicker({ value, categories, onChange, onAddCategory }) {
   );
 }
 
+/* ============================================================
+   @section MODAL-STYLES — von Habit-/Ziel-/Aufgaben-Modal gemeinsam genutzte Stile
+   ============================================================ */
 const overlayStyle = {
   position: "fixed", inset: 0, background: "rgba(10,10,12,0.6)", backdropFilter: "blur(3px)",
   display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 12,
@@ -979,6 +991,7 @@ const ghostBtn = {
 };
 
 /* ============================================================
+   @section GOAL-MODAL — Anlegen/Bearbeiten eines Ziels
    GOAL MODAL (Create / Edit)
    ============================================================ */
 function GoalModal({ initial, onClose, onSave, onDelete, categories, onAddCategory }) {
@@ -1052,9 +1065,7 @@ function GoalModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
 }
 
 /* ============================================================
-   TASK MODAL (Create / Edit)
-   ============================================================ */
-/* ============================================================
+   @section DATE-PICKER — Monats-Kalender als Popover (für Ziel-/Aufgaben-Termine)
    DATE PICKER (Monats-Kalender als Popover)
    ============================================================ */
 function DatePicker({ value, onChange, placeholder = "Datum wählen" }) {
@@ -1173,6 +1184,10 @@ function DatePicker({ value, onChange, placeholder = "Datum wählen" }) {
   );
 }
 
+/* ============================================================
+   @section TASK-MODAL — Anlegen/Bearbeiten einer Aufgabe
+   TASK MODAL (Create / Edit)
+   ============================================================ */
 function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCategory }) {
   const [title, setTitle] = useState(initial?.title || "");
   const [content, setContent] = useState(initial?.content || "");
@@ -1255,6 +1270,7 @@ function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
 }
 
 /* ============================================================
+   @section HABIT-ROW — Einzeiliger Habit-Eintrag mit Abhaken (Dashboard + Habits-Liste)
    HABIT ROW (Dashboard / Habits list)
    ============================================================ */
 function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId }) {
@@ -1371,6 +1387,7 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
 }
 
 /* ============================================================
+   @section HABIT-DETAIL — Kalenderansicht + Historie/Werte-Eingabe für einen Habit
    HABIT DETAIL (Kalender + Historie)
    ============================================================ */
 function HabitDetail({ habit, entries, onClose, onToggle }) {
@@ -1703,7 +1720,7 @@ function MiniStat({ label, value, unit }) {
 }
 
 /* ============================================================
-   DASHBOARD
+   @section DASHBOARD — Startseite: Punkte, Coach-Teaser, Aufgaben, Habits, Ziele
    ============================================================ */
 function motivationLine(active, entries, allStats) {
   const done = active.filter((h) => dayStatus(h, entries, todayKey()) === "success").length;
@@ -1959,7 +1976,7 @@ function EmptyState({ onCreate }) {
 }
 
 /* ============================================================
-   HABITS PAGE
+   @section HABITS-PAGE — Vollständige Habit-Liste (alle Habits, nach Kategorie)
    ============================================================ */
 function HabitsPage({ habits, entries, onToggle, onOpenDetail, onEdit, onCreate }) {
   const list = habits;
@@ -1996,6 +2013,7 @@ function HabitsPage({ habits, entries, onToggle, onOpenDetail, onEdit, onCreate 
 }
 
 /* ============================================================
+   @section PROGRESS-PAGE — "Fortschritt": Recharts-Diagramme + Erfolge-Grid
    PROGRESS PAGE (Diagramme + Erfolge)
    ============================================================ */
 function ProgressPage({ habits, entries, achievements, goals, tasks }) {
@@ -2239,6 +2257,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
 }
 
 /* ============================================================
+   @section COACH — Gesamtanalyse via Anthropic API (fetchCoachAnalysis, CoachPage). Tages-/Wochenfeedback siehe @section JOURNAL.
    KI-COACH
    Fasst die aktuelle Habit-Situation zusammen und lässt Claude
    eine kurze, ehrliche und motivierende Einschätzung schreiben.
@@ -2541,6 +2560,7 @@ function CoachPage({ habits, entries, coach, persistCoach, goals, tasks, journal
 }
 
 /* ============================================================
+   @section JOURNAL — Tagebuch (RTF), Tages-Feedback + Wochenbericht via Anthropic API
    JOURNAL
    Tageseintrag mit Habit-Zusammenfassung, Freitext (RTF) und
    optionalem Tages-Feedback vom KI-Coach.
@@ -3021,6 +3041,7 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
 }
 
 /* ============================================================
+   @section GOALS-PAGE — Langfristige Ziele, verknüpfte Habits, Erreichen mit Punktebonus
    GOALS
    Langfristige Ziele mit Beschreibung und Punktebelohnung bei
    Erfüllung. Werden dem Coach als Kontext für die Habits gegeben.
@@ -3239,6 +3260,7 @@ function GoalRow({ goal, onToggle, onEdit, linkedHabits, weekSeries, weekTotal }
 }
 
 /* ============================================================
+   @section TASKS-PAGE — Aufgabenverwaltung + Kalender erledigter Aufgaben
    TASKS
    Einfache Aufgabenverwaltung mit Punktebelohnung bei Erledigung
    ============================================================ */
@@ -3487,6 +3509,7 @@ function TaskRow({ task, onToggle, onEdit }) {
 }
 
 /* ============================================================
+   @section SETTINGS-PAGE — Export/Import (JSON), Kategorie-Verwaltung, Supabase/Anthropic-Key (ConnectionSettings)
    EINSTELLUNGEN / DATENSICHERUNG
    Export als JSON-Download, Import mit Vorschau + Bestätigung
    ============================================================ */
@@ -3804,7 +3827,7 @@ function ConnectionSettings({ onKeyChange }) {
 }
 
 /* ============================================================
-   SIDEBAR
+   @section SIDEBAR — Desktop-Navigation (linke Spalte, ab 760px Breite)
    ============================================================ */
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth <= 760);
@@ -3870,6 +3893,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
 }
 
 /* ============================================================
+   @section MOBILE-NAV — BottomNav + MobileHeader (mobiles Layout, unter 760px)
    BOTTOM NAV / MOBILE HEADER (mobiles Layout)
    ============================================================ */
 function BottomNav({ page, setPage, hasCoach }) {
@@ -3948,6 +3972,9 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
 }
 
 
+/* ============================================================
+   @section ROOT — LifeOS: Seiten-Routing, globaler State, Achievement-Checks
+   ============================================================ */
 export default function LifeOS() {
   const {
     habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, categories, loading, refreshing, error,
@@ -4173,6 +4200,7 @@ const appShellStyle = {
 };
 
 /* ============================================================
+   @section ENTRYPOINT — AppRoot (SetupGate + LifeOS) + ReactDOM-Mount
    ROOT: zeigt Setup-Screen bis Supabase konfiguriert ist,
    danach die eigentliche App.
    ============================================================ */
