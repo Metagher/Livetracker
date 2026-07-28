@@ -1656,7 +1656,7 @@ function motivationLine(active, entries, allStats) {
 }
 
 function Dashboard({
-  habits, entries, onToggle, onOpenDetail, onEdit, onCreate, celebrateId, coach, onOpenCoach,
+  habits, entries, onToggle, onOpenDetail, onEdit, onCreate, celebrateId, coach, onOpenCoach, hasCoach,
   goals, tasks, persistGoals, persistTasks, onOpenTasks, onOpenGoals, onCreateTask, onCreateGoal,
 }) {
   const active = habits;
@@ -1698,7 +1698,7 @@ function Dashboard({
         <p style={{ color: COLORS.textMuted, fontSize: 14.5, marginTop: 6 }}>{motivationLine(active, entries, allStats)}</p>
       </div>
 
-      {coach?.quote && (
+      {hasCoach && coach?.quote && (
         <button onClick={onOpenCoach} style={{
           display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", cursor: "pointer",
           background: `linear-gradient(135deg, ${COLORS.violet}14, ${COLORS.ember1}0a)`,
@@ -2641,7 +2641,7 @@ const rtfBtnStyle = {
   display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
 };
 
-function JournalPage({ habits, entries, journal, persistJournal, goals, tasks }) {
+function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, hasCoach }) {
   const isMobile = useIsMobile();
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [selectedDay, setSelectedDay] = useState(todayKey());
@@ -2914,39 +2914,41 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks })
         </div>
       </div>
 
-      <div style={{
-        background: `linear-gradient(160deg, ${COLORS.surface}, ${COLORS.bgSoft})`,
-        border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, padding: 16,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
-          <div style={{
-            width: 28, height: 28, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center",
-            background: `linear-gradient(135deg, ${COLORS.violet}, ${COLORS.ember1})`,
-          }}>
-            <Brain size={14} style={{ color: "#fff" }} />
-          </div>
-          <span style={{ fontWeight: 700, fontSize: 13.5 }}>Coach-Feedback zu diesem Tag</span>
-        </div>
-
-        {loadingFeedback ? (
-          <div style={{ color: COLORS.textMuted, fontSize: 13.5, display: "flex", alignItems: "center", gap: 8 }}>
-            <Sparkles size={14} style={{ color: COLORS.ember2 }} /> Analysiert deinen Tag …
-          </div>
-        ) : dayEntry.feedback ? (
-          <p style={{ fontSize: 13.5, lineHeight: 1.6, color: COLORS.text, margin: 0, marginBottom: 10 }}>{dayEntry.feedback}</p>
-        ) : (
-          <div style={{ color: COLORS.textMuted, fontSize: 13, marginBottom: 10 }}>Noch kein Feedback für diesen Tag.</div>
-        )}
-
-        {feedbackErr && <div style={{ color: COLORS.coral, fontSize: 12, marginBottom: 8 }}>{feedbackErr}</div>}
-
-        <button onClick={runFeedback} disabled={loadingFeedback} style={{
-          ...primaryBtn, display: "flex", alignItems: "center", gap: 7,
-          opacity: loadingFeedback ? 0.6 : 1, cursor: loadingFeedback ? "not-allowed" : "pointer",
+      {hasCoach && (
+        <div style={{
+          background: `linear-gradient(160deg, ${COLORS.surface}, ${COLORS.bgSoft})`,
+          border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, padding: 16,
         }}>
-          <Sparkles size={13} /> {dayEntry.feedback ? "Feedback neu holen" : "Feedback holen"}
-        </button>
-      </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center",
+              background: `linear-gradient(135deg, ${COLORS.violet}, ${COLORS.ember1})`,
+            }}>
+              <Brain size={14} style={{ color: "#fff" }} />
+            </div>
+            <span style={{ fontWeight: 700, fontSize: 13.5 }}>Coach-Feedback zu diesem Tag</span>
+          </div>
+
+          {loadingFeedback ? (
+            <div style={{ color: COLORS.textMuted, fontSize: 13.5, display: "flex", alignItems: "center", gap: 8 }}>
+              <Sparkles size={14} style={{ color: COLORS.ember2 }} /> Analysiert deinen Tag …
+            </div>
+          ) : dayEntry.feedback ? (
+            <p style={{ fontSize: 13.5, lineHeight: 1.6, color: COLORS.text, margin: 0, marginBottom: 10 }}>{dayEntry.feedback}</p>
+          ) : (
+            <div style={{ color: COLORS.textMuted, fontSize: 13, marginBottom: 10 }}>Noch kein Feedback für diesen Tag.</div>
+          )}
+
+          {feedbackErr && <div style={{ color: COLORS.coral, fontSize: 12, marginBottom: 8 }}>{feedbackErr}</div>}
+
+          <button onClick={runFeedback} disabled={loadingFeedback} style={{
+            ...primaryBtn, display: "flex", alignItems: "center", gap: 7,
+            opacity: loadingFeedback ? 0.6 : 1, cursor: loadingFeedback ? "not-allowed" : "pointer",
+          }}>
+            <Sparkles size={13} /> {dayEntry.feedback ? "Feedback neu holen" : "Feedback holen"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -3448,6 +3450,7 @@ function downloadJSON(filename, obj) {
 function SettingsPage({
   habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, categories,
   persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistCategories,
+  onAnthropicKeyChange,
 }) {
   const fileInputRef = useRef(null);
   const [pendingImport, setPendingImport] = useState(null);
@@ -3581,7 +3584,7 @@ function SettingsPage({
         persistHabits={persistHabits} persistTasks={persistTasks} persistGoals={persistGoals}
       />
 
-      <ConnectionSettings />
+      <ConnectionSettings onKeyChange={onAnthropicKeyChange} />
     </div>
   );
 }
@@ -3676,7 +3679,7 @@ function CategoryManager({ categories, persistCategories, habits, tasks, goals, 
 }
 
 
-function ConnectionSettings() {
+function ConnectionSettings({ onKeyChange }) {
   const existing = getConfig() || {};
   const [anthropicKey, setAnthropicKey] = useState(existing.anthropicKey || "");
   const [saved, setSaved] = useState(false);
@@ -3685,6 +3688,7 @@ function ConnectionSettings() {
   const saveKey = () => {
     setConfig({ ...existing, anthropicKey });
     setSaved(true);
+    onKeyChange?.();
     setTimeout(() => setSaved(false), 1800);
   };
 
@@ -3746,7 +3750,7 @@ function useIsMobile() {
   return isMobile;
 }
 
-function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing }) {
+function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }) {
   const items = [
     { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
     { key: "progress", label: "Fortschritt", Icon: TrendingUp },
@@ -3754,7 +3758,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing }) {
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
     { key: "journal", label: "Journal", Icon: BookOpen },
-    { key: "coach", label: "Coach", Icon: Brain },
+    ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
     { key: "settings", label: "Einstellungen", Icon: Settings },
   ];
   return (
@@ -3801,7 +3805,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing }) {
 /* ============================================================
    BOTTOM NAV / MOBILE HEADER (mobiles Layout)
    ============================================================ */
-function BottomNav({ page, setPage }) {
+function BottomNav({ page, setPage, hasCoach }) {
   const items = [
     { key: "dashboard", label: "Home", Icon: LayoutDashboard },
     { key: "progress", label: "Verlauf", Icon: TrendingUp },
@@ -3809,7 +3813,7 @@ function BottomNav({ page, setPage }) {
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
     { key: "journal", label: "Journal", Icon: BookOpen },
-    { key: "coach", label: "Coach", Icon: Brain },
+    ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
     { key: "settings", label: "Settings", Icon: Settings },
   ];
   return (
@@ -3884,6 +3888,8 @@ export default function LifeOS() {
     if (!name || categories.includes(name)) return;
     persistCategories([...categories, name]);
   };
+  const [hasCoachKey, setHasCoachKey] = useState(() => !!getAnthropicKey());
+  const refreshCoachKey = useCallback(() => setHasCoachKey(!!getAnthropicKey()), []);
   const [page, setPage] = useState("dashboard");
   const [modalHabit, setModalHabit] = useState(undefined);
   const [showModal, setShowModal] = useState(false);
@@ -3930,6 +3936,10 @@ export default function LifeOS() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totalPoints, loading]);
+
+  useEffect(() => {
+    if (page === "coach" && !hasCoachKey) setPage("dashboard");
+  }, [page, hasCoachKey]);
 
   const handleToggle = (habitId, dateKey, value) => {
     const next = { ...entries, [dateKey]: { ...(entries[dateKey] || {}), [habitId]: value } };
@@ -4009,7 +4019,7 @@ export default function LifeOS() {
         </div>
       )}
 
-      {isMobile ? <MobileHeader totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} /> : <Sidebar page={page} setPage={setPage} totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} />}
+      {isMobile ? <MobileHeader totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} /> : <Sidebar page={page} setPage={setPage} totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} hasCoach={hasCoachKey} />}
 
       <div style={{
         flex: 1, overflowY: "auto",
@@ -4026,6 +4036,7 @@ export default function LifeOS() {
               celebrateId={celebrateId}
               coach={coach}
               onOpenCoach={() => setPage("coach")}
+              hasCoach={hasCoachKey}
               goals={goals}
               tasks={tasks}
               persistGoals={persistGoals}
@@ -4044,8 +4055,8 @@ export default function LifeOS() {
             />
           )}
           {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} />}
-          {page === "coach" && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
-          {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} />}
+          {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
+          {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} entries={entries} categories={categories} onAddCategory={addCategory} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "settings" && (
@@ -4055,6 +4066,7 @@ export default function LifeOS() {
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
               persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
               persistGoals={persistGoals} persistTasks={persistTasks} persistCategories={persistCategories}
+              onAnthropicKeyChange={refreshCoachKey}
             />
           )}
         </div>
@@ -4079,7 +4091,7 @@ export default function LifeOS() {
           onToggle={handleToggle}
         />
       )}
-      {isMobile && <BottomNav page={page} setPage={setPage} />}
+      {isMobile && <BottomNav page={page} setPage={setPage} hasCoach={hasCoachKey} />}
     </div>
   );
 }
