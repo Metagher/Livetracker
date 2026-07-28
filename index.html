@@ -3873,7 +3873,7 @@ function BottomNav({ page, setPage, hasCoach }) {
   return (
     <div style={{
       position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 200,
-      display: "flex", overflowX: "auto", background: COLORS.surface,
+      display: "flex", background: COLORS.surface,
       borderTop: `1px solid ${COLORS.borderSoft}`,
       paddingBottom: "env(safe-area-inset-bottom, 0px)",
     }}>
@@ -3881,12 +3881,15 @@ function BottomNav({ page, setPage, hasCoach }) {
         const active = page === key;
         return (
           <button key={key} onClick={() => setPage(key)} style={{
-            flex: "1 0 64px", minWidth: 64, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
-            padding: "9px 4px 8px", border: "none", background: "transparent", cursor: "pointer",
+            flex: "1 1 0", minWidth: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+            padding: "9px 2px 8px", border: "none", background: "transparent", cursor: "pointer",
             color: active ? COLORS.ember2 : COLORS.textFaint,
           }}>
             <Icon size={19} strokeWidth={active ? 2.4 : 2} />
-            <span style={{ fontSize: 9.5, fontWeight: active ? 700 : 500 }}>{label}</span>
+            <span style={{
+              fontSize: 9.5, fontWeight: active ? 700 : 500,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%",
+            }}>{label}</span>
           </button>
         );
       })}
