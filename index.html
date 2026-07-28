@@ -5,10 +5,64 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lifetracker">
+<meta name="theme-color" content="#15161B">
 <title>Lifetracker</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #15161B; }
+  html, body { margin: 0; padding: 0; background: #15161B; -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
+  #root { overscroll-behavior: none; }
+  * { -webkit-tap-highlight-color: transparent; }
+  /* iOS Safari zoomt beim Fokussieren in Felder mit < 16px Schrift hinein - auf dem iPhone
+     erzwingen wir daher 16px für alle Eingaben, unabhängig vom sonstigen UI-Schriftgrad. */
+  @media (max-width: 760px) {
+    input, select, textarea, [contenteditable="true"] { font-size: 16px !important; }
+  }
+  /* 100vh berücksichtigt auf iOS nicht die ein-/ausblendende Adressleiste - dvh schon. */
+  @supports (height: 100dvh) {
+    #root > div { height: 100dvh !important; }
+  }
 </style>
+<script>
+  // Erzeugt ein Home-Screen-Icon (Ember-Verlauf, passend zum App-Branding) zur Laufzeit,
+  // damit "Zum Home-Bildschirm" auf dem iPhone kein Screenshot-Icon zeigt, sondern ein echtes.
+  (function () {
+    try {
+      var size = 180;
+      var canvas = document.createElement("canvas");
+      canvas.width = size; canvas.height = size;
+      var ctx = canvas.getContext("2d");
+      var r = size * 0.22;
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.arcTo(size, 0, size, size, r);
+      ctx.arcTo(size, size, 0, size, r);
+      ctx.arcTo(0, size, 0, 0, r);
+      ctx.arcTo(0, 0, size, 0, r);
+      ctx.closePath();
+      var grad = ctx.createLinearGradient(0, 0, size, size);
+      grad.addColorStop(0, "#FF7A45");
+      grad.addColorStop(1, "#FFC15E");
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.fillStyle = "#1A1305";
+      ctx.font = "700 " + Math.round(size * 0.56) + "px Georgia, serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("L", size / 2, size * 0.56);
+      var dataUrl = canvas.toDataURL("image/png");
+      [
+        { rel: "apple-touch-icon", sizes: "180x180" },
+        { rel: "icon", sizes: "180x180" },
+      ].forEach(function (cfg) {
+        var link = document.createElement("link");
+        link.rel = cfg.rel;
+        link.sizes = cfg.sizes;
+        link.href = dataUrl;
+        document.head.appendChild(link);
+      });
+    } catch (e) {}
+  })();
+</script>
 <script type="importmap">
 {
   "imports": {
@@ -899,7 +953,7 @@ const overlayStyle = {
 };
 const modalStyle = {
   background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 18,
-  padding: 24, width: "100%", maxHeight: "88vh", overflowY: "auto",
+  padding: 24, width: "100%", maxHeight: "88vh", overflowY: "auto", overscrollBehaviorY: "contain",
   boxShadow: "0 30px 60px rgba(0,0,0,0.5)",
 };
 const labelStyle = { display: "block", fontSize: 11.5, fontWeight: 600, color: COLORS.textMuted, marginBottom: 6, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.04em" };
@@ -3844,7 +3898,8 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
   return (
     <div style={{
       position: "sticky", top: 0, zIndex: 150, display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "12px 16px", background: COLORS.bg + "f2", backdropFilter: "blur(6px)",
+      paddingTop: "calc(12px + env(safe-area-inset-top, 0px))", paddingRight: 16, paddingBottom: 12, paddingLeft: 16,
+      background: COLORS.bg + "f2", backdropFilter: "blur(6px)",
       borderBottom: `1px solid ${COLORS.borderSoft}`,
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -4022,7 +4077,7 @@ export default function LifeOS() {
       {isMobile ? <MobileHeader totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} /> : <Sidebar page={page} setPage={setPage} totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} hasCoach={hasCoachKey} />}
 
       <div style={{
-        flex: 1, overflowY: "auto",
+        flex: 1, overflowY: "auto", overscrollBehaviorY: "contain",
         padding: isMobile ? "14px 14px calc(76px + env(safe-area-inset-bottom, 0px))" : "26px 34px",
       }}>
         <div style={{ maxWidth: isMobile ? "100%" : 720, margin: "0 auto" }}>
