@@ -86,7 +86,7 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown
+  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -588,7 +588,9 @@ function useLifeOSData() {
   const [weeklyReports, setWeeklyReports] = useState({});
   const [goals, setGoals] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [persons, setPersons] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [personGroups, setPersonGroups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -596,7 +598,7 @@ function useLifeOSData() {
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const [h, e, a, c, j, w, g, t, cat] = await Promise.allSettled([
+      const [h, e, a, c, j, w, g, t, p, cat, pg] = await Promise.allSettled([
         window.storage.get("los-habits"),
         window.storage.get("los-entries"),
         window.storage.get("los-achievements"),
@@ -605,7 +607,9 @@ function useLifeOSData() {
         window.storage.get("los-weekly-reports"),
         window.storage.get("los-goals"),
         window.storage.get("los-tasks"),
+        window.storage.get("los-persons"),
         window.storage.get("los-categories"),
+        window.storage.get("los-person-groups"),
       ]);
       setHabits(h.status === "fulfilled" && h.value ? JSON.parse(h.value.value) : []);
       setEntries(e.status === "fulfilled" && e.value ? JSON.parse(e.value.value) : {});
@@ -615,7 +619,9 @@ function useLifeOSData() {
       setWeeklyReports(w.status === "fulfilled" && w.value ? JSON.parse(w.value.value) : {});
       setGoals(g.status === "fulfilled" && g.value ? JSON.parse(g.value.value) : []);
       setTasks(t.status === "fulfilled" && t.value ? JSON.parse(t.value.value) : []);
+      setPersons(p.status === "fulfilled" && p.value ? JSON.parse(p.value.value) : []);
       setCategories(cat.status === "fulfilled" && cat.value ? JSON.parse(cat.value.value) : []);
+      setPersonGroups(pg.status === "fulfilled" && pg.value ? JSON.parse(pg.value.value) : []);
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -664,14 +670,22 @@ function useLifeOSData() {
     setTasks(next);
     try { await window.storage.set("los-tasks", JSON.stringify(next)); } catch {}
   }, []);
+  const persistPersons = useCallback(async (next) => {
+    setPersons(next);
+    try { await window.storage.set("los-persons", JSON.stringify(next)); } catch {}
+  }, []);
   const persistCategories = useCallback(async (next) => {
     setCategories(next);
     try { await window.storage.set("los-categories", JSON.stringify(next)); } catch {}
   }, []);
+  const persistPersonGroups = useCallback(async (next) => {
+    setPersonGroups(next);
+    try { await window.storage.set("los-person-groups", JSON.stringify(next)); } catch {}
+  }, []);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, categories, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistCategories,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups,
     refresh,
   };
 }
@@ -1256,6 +1270,90 @@ function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
                 dueDate: dueDate || null,
                 completed: initial?.completed || false,
                 completedAt: initial?.completedAt || null,
+                createdAt: initial?.createdAt || todayKey(),
+              })}
+              style={{ ...primaryBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
+            >
+              Speichern
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   @section PERSON-MODAL — Anlegen/Bearbeiten einer Person
+   ============================================================ */
+function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [info, setInfo] = useState(initial?.info || "");
+  const [category, setCategory] = useState(initial?.category || "");
+  const [birthday, setBirthday] = useState(initial?.birthday || "");
+  const [color, setColor] = useState(initial?.color || HABIT_COLORS[0]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const canSave = name.trim().length > 0;
+
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
+            {initial ? "Person bearbeiten" : "Neue Person"}
+          </h2>
+          <IconButton onClick={onClose}><X size={16} /></IconButton>
+        </div>
+
+        <label style={labelStyle}>Name</label>
+        <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="z. B. Anna Müller" autoFocus />
+
+        <label style={labelStyle}>Gruppe (optional)</label>
+        <div style={{ marginBottom: 14 }}>
+          <CategoryPicker value={category} categories={groups || []} onChange={setCategory} onAddCategory={onAddGroup} />
+        </div>
+
+        <label style={labelStyle}>Geburtstag (optional)</label>
+        <DatePicker value={birthday} onChange={setBirthday} placeholder="Kein Geburtstag hinterlegt" />
+
+        <label style={labelStyle}>Infos (optional)</label>
+        <textarea
+          style={{ ...inputStyle, minHeight: 100, resize: "vertical", fontFamily: "Inter, sans-serif" }}
+          value={info}
+          onChange={(e) => setInfo(e.target.value)}
+          placeholder="Wie ihr euch kennt, was euch wichtig ist, Vorlieben …"
+        />
+
+        <label style={labelStyle}>Farbe</label>
+        <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+          {HABIT_COLORS.map((c) => (
+            <button key={c} onClick={() => setColor(c)} style={{
+              width: 26, height: 26, borderRadius: "50%", background: c, cursor: "pointer",
+              border: color === c ? `2px solid ${COLORS.text}` : "2px solid transparent",
+              boxShadow: color === c ? `0 0 0 2px ${COLORS.bg}` : "none",
+            }} />
+          ))}
+        </div>
+
+        <div style={modalFooterStyle}>
+          {initial ? (
+            <button onClick={() => (confirmDelete ? onDelete(initial.id) : setConfirmDelete(true))} style={{
+              ...ghostBtn, color: COLORS.coral, display: "flex", alignItems: "center", gap: 6,
+              border: `1px solid ${confirmDelete ? COLORS.coral : COLORS.border}`,
+              background: confirmDelete ? COLORS.coral + "1f" : "transparent",
+            }}>
+              <Trash2 size={14} /> {confirmDelete ? "Wirklich löschen?" : "Löschen"}
+            </button>
+          ) : <span />}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={onClose} style={ghostBtn}>Abbrechen</button>
+            <button
+              disabled={!canSave}
+              onClick={() => onSave({
+                id: initial?.id || `person_${Date.now()}`,
+                name: name.trim(), info: info.trim(), category: category.trim(), birthday: birthday || null, color,
+                meetings: initial?.meetings || [],
                 createdAt: initial?.createdAt || todayKey(),
               })}
               style={{ ...primaryBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
@@ -3509,6 +3607,172 @@ function TaskRow({ task, onToggle, onEdit }) {
 }
 
 /* ============================================================
+   @section PERSONS-PAGE — Personenverwaltung: Klick zählt ein Treffen, pro Person eine Auswertung
+   PERSONEN
+   Ein Klick auf eine Person zählt ein Treffen (Datum wird gespeichert).
+   Pro Person gibt es eine Auswertung (Treffen gesamt/Woche/Monat, zuletzt
+   getroffen) sowie ein freies Info-Feld für Notizen zur Person.
+   ============================================================ */
+function personStats(person) {
+  const meetings = (person.meetings || []).slice().sort();
+  const total = meetings.length;
+  const lastMet = total > 0 ? meetings[meetings.length - 1] : null;
+  const weekStart = toKey(startOfWeek(new Date()));
+  const monthStart = toKey(startOfMonth(new Date()));
+  const thisWeek = meetings.filter((k) => k >= weekStart).length;
+  const thisMonth = meetings.filter((k) => k >= monthStart).length;
+  return { total, lastMet, thisWeek, thisMonth };
+}
+
+function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }) {
+  const [showModal, setShowModal] = useState(false);
+  const [modalPerson, setModalPerson] = useState(undefined);
+  const [celebrateId, setCelebrateId] = useState(null);
+
+  const totalMeetings = persons.reduce((s, p) => s + (p.meetings || []).length, 0);
+  const metTodayCount = persons.filter((p) => (p.meetings || []).includes(todayKey())).length;
+
+  const handleSave = (person) => {
+    const exists = persons.some((p) => p.id === person.id);
+    const next = exists ? persons.map((p) => (p.id === person.id ? person : p)) : [...persons, person];
+    persistPersons(next);
+    setShowModal(false);
+    setModalPerson(undefined);
+  };
+
+  const handleDelete = (id) => {
+    persistPersons(persons.filter((p) => p.id !== id));
+    setShowModal(false);
+    setModalPerson(undefined);
+  };
+
+  const logMeeting = (person) => {
+    const next = persons.map((p) => (p.id === person.id ? { ...p, meetings: [...(p.meetings || []), todayKey()] } : p));
+    persistPersons(next);
+    setCelebrateId(person.id);
+    setTimeout(() => setCelebrateId(null), 1200);
+  };
+
+  const sorted = [...persons].sort((a, b) => a.name.localeCompare(b.name, "de"));
+  const grouped = groupHabitsByCategory(sorted);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Personen</h1>
+        <button onClick={() => { setModalPerson(undefined); setShowModal(true); }} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 6 }}>
+          <Plus size={15} /> Neue Person
+        </button>
+      </div>
+
+      {persons.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 26 }}>
+          <StatCard label="Personen" value={persons.length} suffix="" accent={COLORS.violet} />
+          <StatCard label="Treffen gesamt" value={totalMeetings} suffix="" accent={COLORS.mint} />
+          <StatCard label="Heute getroffen" value={metTodayCount} suffix="" accent={COLORS.ember2} />
+        </div>
+      )}
+
+      {persons.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "48px 20px", border: `1px dashed ${COLORS.border}`, borderRadius: 16, color: COLORS.textMuted }}>
+          <Users size={28} style={{ color: COLORS.violet, marginBottom: 10 }} />
+          <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.text, marginBottom: 4 }}>Noch keine Personen</div>
+          <div style={{ fontSize: 13, marginBottom: 16 }}>Leg Personen an und halte fest, wann ihr euch trefft - ein Klick auf die Person zählt ein Treffen.</div>
+          <button onClick={() => { setModalPerson(undefined); setShowModal(true); }} style={primaryBtn}>Erste Person anlegen</button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          {grouped.map(({ category, habits: groupPersons }) => (
+            <div key={category}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryColor(category) }} />
+                <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>{category}</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {groupPersons.map((p) => (
+                  <PersonRow
+                    key={p.id}
+                    person={p}
+                    celebrating={celebrateId === p.id}
+                    onLogMeeting={() => logMeeting(p)}
+                    onEdit={() => { setModalPerson(p); setShowModal(true); }}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showModal && (
+        <PersonModal
+          initial={modalPerson}
+          groups={personGroups}
+          onAddGroup={onAddPersonGroup}
+          onClose={() => { setShowModal(false); setModalPerson(undefined); }}
+          onSave={handleSave}
+          onDelete={handleDelete}
+        />
+      )}
+    </div>
+  );
+}
+
+function PersonRow({ person, celebrating, onLogMeeting, onEdit }) {
+  const stats = personStats(person);
+  const initial = (person.name || "?").trim().charAt(0).toUpperCase();
+
+  return (
+    <div
+      onClick={onLogMeeting}
+      title="Klicken, um ein Treffen zu zählen"
+      style={{
+        display: "flex", alignItems: "center", gap: 14, padding: "14px 16px",
+        background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14,
+        position: "relative", overflow: "hidden", cursor: "pointer",
+      }}
+    >
+      {celebrating && <Confetti trigger={person.id + "_" + Date.now()} />}
+      <div style={{
+        width: 40, height: 40, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+        background: person.color + "22", color: person.color, flexShrink: 0, fontWeight: 700, fontSize: 15,
+      }}>
+        {initial}
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 600, fontSize: 14.5 }}>{person.name}</span>
+          {person.birthday && (
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600,
+              padding: "2px 7px", borderRadius: 6, color: COLORS.ember2, background: COLORS.ember2 + "1a",
+            }}>
+              🎂 {shortDate(person.birthday)}
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 2 }}>
+          {stats.lastMet ? `Zuletzt getroffen: ${shortDate(stats.lastMet)}` : "Noch nicht getroffen"}
+        </div>
+        {person.info && (
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4, lineHeight: 1.4, whiteSpace: "pre-wrap" }}>{person.info}</div>
+        )}
+        <div style={{ display: "flex", gap: 12, marginTop: 6, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: COLORS.textFaint }}>
+          <span>{stats.total} Treffen gesamt</span>
+          <span>{stats.thisWeek} diese Woche</span>
+          <span>{stats.thisMonth} diesen Monat</span>
+        </div>
+      </div>
+
+      <div onClick={(e) => e.stopPropagation()}>
+        <IconButton onClick={onEdit} title="Bearbeiten"><Pencil size={14} /></IconButton>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    @section SETTINGS-PAGE — Export/Import (JSON), Kategorie-Verwaltung, Supabase/Anthropic-Key (ConnectionSettings)
    EINSTELLUNGEN / DATENSICHERUNG
    Export als JSON-Download, Import mit Vorschau + Bestätigung
@@ -3538,8 +3802,8 @@ function downloadJSON(filename, obj) {
 }
 
 function SettingsPage({
-  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, categories,
-  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistCategories,
+  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups,
+  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups,
   onAnthropicKeyChange,
 }) {
   const fileInputRef = useRef(null);
@@ -3550,7 +3814,7 @@ function SettingsPage({
   const handleExport = () => {
     const payload = {
       app: "life-os", version: 1, exportedAt: new Date().toISOString(),
-      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks },
+      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons },
     };
     downloadJSON(`life-os-backup-${todayKey()}.json`, payload);
   };
@@ -3588,6 +3852,7 @@ function SettingsPage({
     await persistWeeklyReports(pendingImport.weeklyReports && typeof pendingImport.weeklyReports === "object" ? pendingImport.weeklyReports : {});
     await persistGoals(Array.isArray(pendingImport.goals) ? pendingImport.goals : []);
     await persistTasks(Array.isArray(pendingImport.tasks) ? pendingImport.tasks : []);
+    await persistPersons(Array.isArray(pendingImport.persons) ? pendingImport.persons : []);
     setPendingImport(null);
     setImportSuccess(true);
     setTimeout(() => setImportSuccess(false), 4000);
@@ -3597,6 +3862,7 @@ function SettingsPage({
     habits: Array.isArray(pendingImport.habits) ? pendingImport.habits.length : 0,
     goals: Array.isArray(pendingImport.goals) ? pendingImport.goals.length : 0,
     tasks: Array.isArray(pendingImport.tasks) ? pendingImport.tasks.length : 0,
+    persons: Array.isArray(pendingImport.persons) ? pendingImport.persons.length : 0,
     journalDays: pendingImport.journal && typeof pendingImport.journal === "object" ? Object.keys(pendingImport.journal).length : 0,
   } : null;
 
@@ -3612,7 +3878,7 @@ function SettingsPage({
           <span style={{ fontWeight: 700, fontSize: 14.5 }}>Daten exportieren</span>
         </div>
         <p style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.6, marginBottom: 14 }}>
-          Lädt eine JSON-Datei mit allen deinen Habits, Einträgen, Zielen, Aufgaben, Journal- und Coach-Daten herunter. Damit kannst du deine Daten sichern oder auf ein anderes Gerät übertragen.
+          Lädt eine JSON-Datei mit allen deinen Habits, Einträgen, Zielen, Aufgaben, Personen, Journal- und Coach-Daten herunter. Damit kannst du deine Daten sichern oder auf ein anderes Gerät übertragen.
         </p>
         <button onClick={handleExport} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 7 }}>
           <Download size={14} /> Daten exportieren
@@ -3655,7 +3921,7 @@ function SettingsPage({
               <AlertTriangle size={15} /> Import bestätigen
             </div>
             <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.6 }}>
-              Gefunden: {counts.habits} Habits, {counts.goals} Ziele, {counts.tasks} Aufgaben, {counts.journalDays} Journal-Tage.
+              Gefunden: {counts.habits} Habits, {counts.goals} Ziele, {counts.tasks} Aufgaben, {counts.persons} Personen, {counts.journalDays} Journal-Tage.
               Das überschreibt <strong style={{ color: COLORS.text }}>alle</strong> aktuell gespeicherten Daten unwiderruflich.
             </div>
             <div style={{ display: "flex", gap: 10 }}>
@@ -3672,6 +3938,11 @@ function SettingsPage({
         categories={categories} persistCategories={persistCategories}
         habits={habits} tasks={tasks} goals={goals}
         persistHabits={persistHabits} persistTasks={persistTasks} persistGoals={persistGoals}
+      />
+
+      <PersonGroupManager
+        groups={personGroups} persistGroups={persistPersonGroups}
+        persons={persons} persistPersons={persistPersons}
       />
 
       <ConnectionSettings onKeyChange={onAnthropicKeyChange} />
@@ -3768,6 +4039,96 @@ function CategoryManager({ categories, persistCategories, habits, tasks, goals, 
   );
 }
 
+/* ============================================================
+   @section PERSON-GROUP-MANAGER — eigene, von Habits/Tasks/Zielen getrennte Gruppen-Liste für Personen
+   ============================================================ */
+function PersonGroupManager({ groups, persistGroups, persons, persistPersons }) {
+  const [newGroup, setNewGroup] = useState("");
+  const [renaming, setRenaming] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const addGroup = () => {
+    const trimmed = newGroup.trim();
+    setNewGroup("");
+    if (!trimmed || groups.includes(trimmed)) return;
+    persistGroups([...groups, trimmed]);
+  };
+
+  const startRename = (g) => { setRenaming(g); setRenameValue(g); };
+  const confirmRename = () => {
+    const trimmed = renameValue.trim();
+    setRenaming(null);
+    if (!trimmed || trimmed === renaming) return;
+    persistGroups(groups.map((g) => (g === renaming ? trimmed : g)));
+    persistPersons(persons.map((p) => (p.category === renaming ? { ...p, category: trimmed } : p)));
+  };
+
+  const deleteGroup = (g) => {
+    persistGroups(groups.filter((x) => x !== g));
+    setConfirmDelete(null);
+  };
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginTop: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", background: COLORS.violet + "1f" }}>
+          <Users size={15} style={{ color: COLORS.violet }} />
+        </div>
+        <span style={{ fontWeight: 700, fontSize: 14.5 }}>Personen-Gruppen verwalten</span>
+      </div>
+      <p style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+        Eigene Gruppen-Liste nur für Personen, getrennt von den Kategorien oben. Umbenennen aktualisiert automatisch alle Personen, die diese Gruppe nutzen.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <input
+          style={{ ...inputStyle, marginBottom: 0, flex: 1 }} value={newGroup}
+          onChange={(e) => setNewGroup(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addGroup(); }}
+          placeholder="Neue Gruppe"
+        />
+        <button onClick={addGroup} style={primaryBtn}>Hinzufügen</button>
+      </div>
+
+      {groups.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Gruppen angelegt.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {groups.map((g) => (
+            <div key={g} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: COLORS.bgSoft, borderRadius: 9 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: categoryColor(g), flexShrink: 0 }} />
+              {renaming === g ? (
+                <>
+                  <input
+                    autoFocus style={{ ...inputStyle, marginBottom: 0, flex: 1 }} value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") confirmRename(); if (e.key === "Escape") setRenaming(null); }}
+                  />
+                  <button onClick={confirmRename} style={{ ...primaryBtn, padding: "6px 12px" }}>OK</button>
+                  <button onClick={() => setRenaming(null)} style={{ ...ghostBtn, padding: "6px 12px" }}>Abbrechen</button>
+                </>
+              ) : (
+                <>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{g}</span>
+                  <IconButton onClick={() => startRename(g)} title="Umbenennen"><Pencil size={13} /></IconButton>
+                  {confirmDelete === g ? (
+                    <button onClick={() => deleteGroup(g)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 11.5, color: COLORS.coral, border: `1px solid ${COLORS.coral}` }}>
+                      Wirklich löschen?
+                    </button>
+                  ) : (
+                    <IconButton onClick={() => setConfirmDelete(g)} title="Löschen" danger><Trash2 size={13} /></IconButton>
+                  )}
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function ConnectionSettings({ onKeyChange }) {
   const existing = getConfig() || {};
@@ -3847,6 +4208,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
+    { key: "persons", label: "Personen", Icon: Users },
     { key: "journal", label: "Journal", Icon: BookOpen },
     ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
     { key: "settings", label: "Einstellungen", Icon: Settings },
@@ -3903,6 +4265,7 @@ function BottomNav({ page, setPage, hasCoach }) {
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
+    { key: "persons", label: "Personen", Icon: Users },
     { key: "journal", label: "Journal", Icon: BookOpen },
     ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
     { key: "settings", label: "Settings", Icon: Settings },
@@ -3977,14 +4340,18 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
    ============================================================ */
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, categories, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistCategories,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups,
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
   const addCategory = (name) => {
     if (!name || categories.includes(name)) return;
     persistCategories([...categories, name]);
+  };
+  const addPersonGroup = (name) => {
+    if (!name || personGroups.includes(name)) return;
+    persistPersonGroups([...personGroups, name]);
   };
   const [hasCoachKey, setHasCoachKey] = useState(() => !!getAnthropicKey());
   const refreshCoachKey = useCallback(() => setHasCoachKey(!!getAnthropicKey()), []);
@@ -4157,13 +4524,14 @@ export default function LifeOS() {
           {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} entries={entries} categories={categories} onAddCategory={addCategory} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
+          {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} />}
           {page === "settings" && (
             <SettingsPage
               habits={habits} entries={entries} achievements={achievements} coach={coach}
-              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} categories={categories}
+              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups}
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
               persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
-              persistGoals={persistGoals} persistTasks={persistTasks} persistCategories={persistCategories}
+              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups}
               onAnthropicKeyChange={refreshCoachKey}
             />
           )}
