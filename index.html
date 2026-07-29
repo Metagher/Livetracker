@@ -1864,7 +1864,7 @@ function motivationLine(active, entries, allStats) {
 
 function Dashboard({
   habits, entries, onToggle, onOpenDetail, onEdit, onCreate, celebrateId, coach, onOpenCoach, hasCoach,
-  goals, tasks, persistGoals, persistTasks, onOpenTasks, onOpenGoals, onCreateTask, onCreateGoal,
+  goals, tasks, persons, persistTasks, onOpenTasks,
 }) {
   const active = habits;
   const allStats = useMemo(() => active.map((h) => simulateHabit(h, entries, todayKey())), [active, entries]);
@@ -1886,13 +1886,16 @@ function Dashboard({
   const weekTasks = useMemo(() => (tasks || [])
     .filter((t) => !t.completed && t.dueDate && t.dueDate !== todayKey() && weekKeys.includes(t.dueDate))
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate)), [tasks, weekKeys]);
-  const openGoals = (goals || []).filter((g) => !g.achieved);
+  const upcomingBirthdays = useMemo(() => {
+    return (persons || [])
+      .filter((p) => p.birthday)
+      .map((p) => ({ person: p, days: daysUntilBirthday(p.birthday) }))
+      .filter((x) => x.days <= 14)
+      .sort((a, b) => a.days - b.days);
+  }, [persons]);
 
   const completeTask = (task) => {
     persistTasks((tasks || []).map((t) => t.id === task.id ? { ...t, completed: true, completedAt: todayKey() } : t));
-  };
-  const achieveGoal = (goal) => {
-    persistGoals((goals || []).map((g) => g.id === goal.id ? { ...g, achieved: true, achievedAt: todayKey() } : g));
   };
 
   return (
@@ -1927,6 +1930,25 @@ function Dashboard({
             </div>
           </div>
         </button>
+      )}
+
+      {upcomingBirthdays.length > 0 && (
+        <div style={{
+          display: "flex", flexDirection: "column", gap: 8, marginBottom: 24,
+          background: `linear-gradient(135deg, ${COLORS.ember1}14, ${COLORS.ember2}0a)`,
+          border: `1px solid ${COLORS.ember2}33`, borderRadius: 14, padding: "12px 14px",
+        }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.ember2, letterSpacing: "0.03em" }}>GEBURTSTAGE</div>
+          {upcomingBirthdays.map(({ person, days }) => (
+            <div key={person.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
+              <span>🎂</span>
+              <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{person.name}</span>
+              <span style={{ color: COLORS.textMuted, fontSize: 12, flexShrink: 0 }}>
+                {days === 0 ? "heute!" : days === 1 ? "morgen" : `in ${days} Tagen`}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 26 }}>
@@ -2022,39 +2044,6 @@ function Dashboard({
           ))}
         </div>
       )}
-
-      {/* ZIELE: offene Goals im Überblick */}
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <SectionLabel>Ziele</SectionLabel>
-          <button onClick={onOpenGoals} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 11.5 }}>Alle Ziele</button>
-        </div>
-        {openGoals.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: COLORS.textFaint, background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 12, padding: "12px 14px" }}>
-            Keine offenen Ziele.
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {openGoals.map((g) => (
-              <div key={g.id} style={{
-                display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
-                background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 10,
-              }}>
-                <button onClick={() => achieveGoal(g)} style={{
-                  width: 22, height: 22, borderRadius: "50%", flexShrink: 0, cursor: "pointer",
-                  border: `1.5px solid ${COLORS.border}`, background: "transparent", color: COLORS.textMuted,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>
-                  <Check size={12} strokeWidth={2.8} />
-                </button>
-                <Target size={13} style={{ color: COLORS.violet, flexShrink: 0 }} />
-                <span style={{ flex: 1, fontSize: 13, fontWeight: 500, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.title}</span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.ember2, fontFamily: "JetBrains Mono, monospace", flexShrink: 0 }}>{g.points} Pkt.</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -2141,6 +2130,38 @@ function HabitsPage({ habits, entries, onToggle, onOpenDetail, onEdit, onCreate 
   );
 }
 
+function alphaHex(ratio) {
+  return Math.round(Math.max(0, Math.min(1, ratio)) * 255).toString(16).padStart(2, "0");
+}
+
+// Baut ein Jahresraster (Mo-So-Spalten, GitHub-Style) für die Aktivitäts-Heatmap.
+// Tage außerhalb des gewählten Jahres bleiben als unsichtbare Auffüll-Zellen erhalten,
+// damit die Wochen-Spalten sauber ausgerichtet sind.
+function buildYearHeatmap(year, dailyStatusMap) {
+  const jan1 = new Date(year, 0, 1);
+  const dec31 = new Date(year, 11, 31);
+  const gridStart = startOfWeek(jan1);
+  const gridEnd = addDays(startOfWeek(dec31), 6);
+  const weeks = [];
+  let week = [];
+  let cursor = new Date(gridStart);
+  while (cursor <= gridEnd) {
+    const k = toKey(cursor);
+    const stats = dailyStatusMap[k];
+    const tracked = stats ? stats.success + stats.fail : 0;
+    week.push({
+      date: k,
+      inYear: cursor.getFullYear() === year,
+      isFirstOfMonth: cursor.getDate() === 1,
+      month: cursor.getMonth(),
+      ratio: tracked > 0 ? stats.success / tracked : null,
+    });
+    if (week.length === 7) { weeks.push(week); week = []; }
+    cursor = addDays(cursor, 1);
+  }
+  return weeks;
+}
+
 /* ============================================================
    @section PROGRESS-PAGE — "Fortschritt": Recharts-Diagramme + Erfolge-Grid
    PROGRESS PAGE (Diagramme + Erfolge)
@@ -2191,6 +2212,41 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
   }, [dailyPointsMap, viewYear]);
   const maxAbsMonthPoints = Math.max(1, ...yearData.months.map((m) => Math.abs(m.points)));
 
+  // Erfüllungsquote pro Tag (success/fail je Habit, "empty" zählt nicht mit) - Basis
+  // für die Wochen-Trendlinie und die Jahres-Heatmap.
+  const dailyStatusMap = useMemo(() => {
+    const map = {};
+    allStats.forEach((s) => s.daily.forEach((d) => {
+      if (d.status === "empty") return;
+      if (!map[d.date]) map[d.date] = { success: 0, fail: 0 };
+      map[d.date][d.status] += 1;
+    }));
+    return map;
+  }, [allStats]);
+
+  const weeklySuccessRate = useMemo(() => {
+    const thisWeekStart = startOfWeek(new Date());
+    return Array.from({ length: 12 }, (_, i) => {
+      const wStart = addDays(thisWeekStart, -7 * (11 - i));
+      let success = 0, fail = 0;
+      for (let d = 0; d < 7; d++) {
+        const s = dailyStatusMap[toKey(addDays(wStart, d))];
+        if (s) { success += s.success; fail += s.fail; }
+      }
+      const tracked = success + fail;
+      return { week: `KW ${isoWeekNumber(wStart)}`, rate: tracked > 0 ? Math.round((success / tracked) * 100) : null, tracked };
+    });
+  }, [dailyStatusMap]);
+
+  const habitComparison = useMemo(() => {
+    return active
+      .map((h, i) => ({ habit: h, stats: allStats[i] }))
+      .filter(({ stats }) => stats.totalSuccess + stats.totalFail > 0)
+      .sort((a, b) => b.stats.successRate - a.stats.successRate);
+  }, [active, allStats]);
+
+  const yearHeatmapWeeks = useMemo(() => buildYearHeatmap(viewYear, dailyStatusMap), [viewYear, dailyStatusMap]);
+
   const monthlyCategoryStats = useMemo(() => {
     return Array.from({ length: 12 }, (_, m) => {
       const prefix = `${viewYear}-${pad(m + 1)}`;
@@ -2238,6 +2294,57 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
             <Line type="monotone" dataKey="total" stroke={COLORS.ember2} strokeWidth={2.5} dot={false} />
           </LineChart>
         </ResponsiveContainer>
+      </div>
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+        <SectionLabel>Erfüllungsquote (letzte 12 Wochen)</SectionLabel>
+        <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
+          Anteil erfüllter Habits je Woche - unabhängig von der Punkte-Skalierung, zeigt also direkt, wie konsequent du warst.
+        </p>
+        <ResponsiveContainer width="100%" height={200}>
+          <LineChart data={weeklySuccessRate}>
+            <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="week" tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} minTickGap={20} />
+            <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={false} tickLine={false} />
+            <Tooltip
+              contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }}
+              labelStyle={{ color: COLORS.text }}
+              formatter={(value, _name, props) => [value === null ? "keine Daten" : `${value}% (${props.payload.tracked} Einträge)`, "Erfüllungsquote"]}
+            />
+            <Line type="monotone" dataKey="rate" stroke={COLORS.mint} strokeWidth={2.5} dot={{ r: 3, fill: COLORS.mint }} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+        <SectionLabel>Aktivität {viewYear}</SectionLabel>
+        <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
+          Jeder Tag als Quadrat - je heller, desto größer der Anteil erfüllter Habits an diesem Tag.
+        </p>
+        <div style={{ overflowX: "auto", paddingBottom: 4 }}>
+          <div style={{ display: "flex", gap: 3, width: "max-content" }}>
+            {yearHeatmapWeeks.map((week, wi) => {
+              const monthDay = week.find((d) => d.inYear && d.isFirstOfMonth);
+              return (
+                <div key={wi} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <div style={{ height: 12, fontSize: 9.5, color: COLORS.textFaint, whiteSpace: "nowrap" }}>
+                    {monthDay ? MONTH_LABELS[monthDay.month] : ""}
+                  </div>
+                  {week.map((day) => (
+                    <div
+                      key={day.date}
+                      title={day.inYear ? `${shortDate(day.date)}: ${day.ratio === null ? "keine Daten" : Math.round(day.ratio * 100) + "% erfüllt"}` : ""}
+                      style={{
+                        width: 11, height: 11, borderRadius: 3,
+                        background: !day.inYear ? "transparent" : day.ratio === null ? COLORS.borderSoft : COLORS.ember2 + alphaHex(0.15 + day.ratio * 0.75),
+                      }}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
@@ -2333,6 +2440,38 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
             );
           })}
         </div>
+      </div>
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+        <SectionLabel>Habit-Vergleich</SectionLabel>
+        {habitComparison.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine getrackten Tage vorhanden.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 4 }}>
+            {habitComparison.map(({ habit, stats }) => {
+              const Icon = iconFor(habit.icon);
+              return (
+                <div key={habit.id}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5, gap: 8 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 500, minWidth: 0 }}>
+                      <Icon size={13} style={{ color: habit.color, flexShrink: 0 }} />
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{habit.name}</span>
+                      {stats.currentStreak > 0 && (
+                        <span style={{ display: "flex", alignItems: "center", gap: 2, color: COLORS.ember2, fontSize: 11, fontFamily: "JetBrains Mono, monospace", flexShrink: 0 }}>
+                          <Flame size={10} style={{ color: COLORS.ember1 }} />{stats.currentStreak}
+                        </span>
+                      )}
+                    </span>
+                    <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12.5, fontWeight: 700, color: habit.color, flexShrink: 0 }}>{stats.successRate}%</span>
+                  </div>
+                  <div style={{ height: 7, borderRadius: 4, background: COLORS.bgSoft, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${stats.successRate}%`, borderRadius: 4, background: habit.color }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {(goals || []).length > 0 && (
@@ -3655,6 +3794,16 @@ function personStats(person) {
   return { total, lastMet, thisWeek, thisMonth };
 }
 
+// Tage bis zum nächsten Geburtstag (0 = heute), unabhängig vom gespeicherten Jahrgang.
+function daysUntilBirthday(birthday, today = new Date()) {
+  if (!birthday) return null;
+  const b = keyToDate(birthday);
+  const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  let next = new Date(todayMid.getFullYear(), b.getMonth(), b.getDate());
+  if (next < todayMid) next = new Date(todayMid.getFullYear() + 1, b.getMonth(), b.getDate());
+  return Math.round((next - todayMid) / 86400000);
+}
+
 function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }) {
   const [showModal, setShowModal] = useState(false);
   const [modalPerson, setModalPerson] = useState(undefined);
@@ -4535,10 +4684,9 @@ export default function LifeOS() {
               hasCoach={hasCoachKey}
               goals={goals}
               tasks={tasks}
-              persistGoals={persistGoals}
+              persons={persons}
               persistTasks={persistTasks}
               onOpenTasks={() => setPage("tasks")}
-              onOpenGoals={() => setPage("goals")}
             />
           )}
           {page === "habits" && (
