@@ -782,6 +782,7 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+      <div style={modalBodyStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
             {initial ? "Habit bearbeiten" : "Neuer Habit"}
@@ -878,6 +879,7 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
             </button>
           ))}
         </div>
+      </div>
 
         <div style={modalFooterStyle}>
           {initial ? (
@@ -978,17 +980,22 @@ const overlayStyle = {
   position: "fixed", inset: 0, background: "rgba(10,10,12,0.6)", backdropFilter: "blur(3px)",
   display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 12,
 };
+// Fixer Rahmen (Kopf+Body+Footer als Flex-Spalte) statt "position: sticky" für den
+// Footer: sticky erwies sich auf iOS bei langen Formularen + eingeblendeter Tastatur
+// als unzuverlässig. Jetzt ist NUR modalBodyStyle scrollbar, modalFooterStyle liegt
+// als normales Flex-Geschwisterelement immer sichtbar darunter.
 const modalStyle = {
   background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 18,
-  padding: 24, width: "100%", maxHeight: "88vh", overflowY: "auto", overscrollBehaviorY: "contain",
-  boxShadow: "0 30px 60px rgba(0,0,0,0.5)",
+  width: "100%", maxHeight: "88vh", boxShadow: "0 30px 60px rgba(0,0,0,0.5)",
+  display: "flex", flexDirection: "column", overflow: "hidden",
+};
+const modalBodyStyle = {
+  padding: 24, overflowY: "auto", overscrollBehaviorY: "contain", flex: "1 1 auto", minHeight: 0,
 };
 const labelStyle = { display: "block", fontSize: 11.5, fontWeight: 600, color: COLORS.textMuted, marginBottom: 6, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.04em" };
-// Bleibt beim Scrollen am unteren Rand des Modals kleben, damit Speichern/Abbrechen
-// immer erreichbar sind - auch bei langen Formularen oder eingeblendeter Tastatur.
 const modalFooterStyle = {
   display: "flex", justifyContent: "space-between", alignItems: "center",
-  position: "sticky", bottom: 0, marginTop: 10, padding: "14px 0 0",
+  padding: "14px 24px", flexShrink: 0,
   background: COLORS.surface, borderTop: `1px solid ${COLORS.borderSoft}`,
 };
 const inputStyle = {
@@ -1048,6 +1055,7 @@ function GoalModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+      <div style={modalBodyStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
             {initial ? "Ziel bearbeiten" : "Neues Ziel"}
@@ -1073,6 +1081,7 @@ function GoalModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
         <div style={{ marginBottom: 14 }}>
           <CategoryPicker value={category} categories={categories || []} onChange={setCategory} onAddCategory={onAddCategory} />
         </div>
+      </div>
 
         <div style={modalFooterStyle}>
           {initial ? (
@@ -1244,6 +1253,7 @@ function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+      <div style={modalBodyStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
             {initial ? "Aufgabe bearbeiten" : "Neue Aufgabe"}
@@ -1278,6 +1288,7 @@ function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
         </div>
         <label style={labelStyle}>Datum (optional)</label>
         <DatePicker value={dueDate} onChange={setDueDate} placeholder="Kein Datum" />
+      </div>
 
         <div style={modalFooterStyle}>
           {initial ? (
@@ -1329,6 +1340,7 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup })
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+      <div style={modalBodyStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
             {initial ? "Person bearbeiten" : "Neue Person"}
@@ -1365,6 +1377,7 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup })
             }} />
           ))}
         </div>
+      </div>
 
         <div style={modalFooterStyle}>
           {initial ? (
@@ -1570,6 +1583,7 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
+      <div style={modalBodyStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
             <div style={{ width: 42, height: 42, borderRadius: 12, background: habit.color + "22", color: habit.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1817,6 +1831,7 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
             )}
           </div>
         )}
+      </div>
       </div>
     </div>
   );
