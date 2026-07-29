@@ -2134,30 +2134,29 @@ function alphaHex(ratio) {
   return Math.round(Math.max(0, Math.min(1, ratio)) * 255).toString(16).padStart(2, "0");
 }
 
-// Baut ein Jahresraster (Mo-So-Spalten, GitHub-Style) für die Aktivitäts-Heatmap.
-// Tage außerhalb des gewählten Jahres bleiben als unsichtbare Auffüll-Zellen erhalten,
-// damit die Wochen-Spalten sauber ausgerichtet sind.
-function buildYearHeatmap(year, dailyStatusMap) {
+// Kumuliert die Aktivitäts-Heatmap pro Kalenderwoche (statt pro Tag), damit sich das
+// ganze Jahr ohne horizontales Scrollen auf einen Blick zeigen lässt.
+function buildYearWeeklyHeatmap(year, dailyStatusMap) {
   const jan1 = new Date(year, 0, 1);
   const dec31 = new Date(year, 11, 31);
   const gridStart = startOfWeek(jan1);
-  const gridEnd = addDays(startOfWeek(dec31), 6);
+  const gridEnd = startOfWeek(dec31);
   const weeks = [];
-  let week = [];
   let cursor = new Date(gridStart);
   while (cursor <= gridEnd) {
-    const k = toKey(cursor);
-    const stats = dailyStatusMap[k];
-    const tracked = stats ? stats.success + stats.fail : 0;
-    week.push({
-      date: k,
-      inYear: cursor.getFullYear() === year,
-      isFirstOfMonth: cursor.getDate() === 1,
-      month: cursor.getMonth(),
-      ratio: tracked > 0 ? stats.success / tracked : null,
+    let success = 0, fail = 0;
+    for (let d = 0; d < 7; d++) {
+      const s = dailyStatusMap[toKey(addDays(cursor, d))];
+      if (s) { success += s.success; fail += s.fail; }
+    }
+    const tracked = success + fail;
+    weeks.push({
+      weekStart: toKey(cursor),
+      weekNum: isoWeekNumber(cursor),
+      ratio: tracked > 0 ? success / tracked : null,
+      tracked,
     });
-    if (week.length === 7) { weeks.push(week); week = []; }
-    cursor = addDays(cursor, 1);
+    cursor = addDays(cursor, 7);
   }
   return weeks;
 }
@@ -2245,7 +2244,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
       .sort((a, b) => b.stats.successRate - a.stats.successRate);
   }, [active, allStats]);
 
-  const yearHeatmapWeeks = useMemo(() => buildYearHeatmap(viewYear, dailyStatusMap), [viewYear, dailyStatusMap]);
+  const yearWeeklyHeatmap = useMemo(() => buildYearWeeklyHeatmap(viewYear, dailyStatusMap), [viewYear, dailyStatusMap]);
 
   const monthlyCategoryStats = useMemo(() => {
     return Array.from({ length: 12 }, (_, m) => {
@@ -2319,31 +2318,24 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
         <SectionLabel>Aktivität {viewYear}</SectionLabel>
         <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
-          Jeder Tag als Quadrat - je heller, desto größer der Anteil erfüllter Habits an diesem Tag.
+          Pro Kalenderwoche kumuliert - je heller, desto größer der Anteil erfüllter Habits in dieser Woche.
         </p>
-        <div style={{ overflowX: "auto", paddingBottom: 4 }}>
-          <div style={{ display: "flex", gap: 3, width: "max-content" }}>
-            {yearHeatmapWeeks.map((week, wi) => {
-              const monthDay = week.find((d) => d.inYear && d.isFirstOfMonth);
-              return (
-                <div key={wi} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  <div style={{ height: 12, fontSize: 9.5, color: COLORS.textFaint, whiteSpace: "nowrap" }}>
-                    {monthDay ? MONTH_LABELS[monthDay.month] : ""}
-                  </div>
-                  {week.map((day) => (
-                    <div
-                      key={day.date}
-                      title={day.inYear ? `${shortDate(day.date)}: ${day.ratio === null ? "keine Daten" : Math.round(day.ratio * 100) + "% erfüllt"}` : ""}
-                      style={{
-                        width: 11, height: 11, borderRadius: 3,
-                        background: !day.inYear ? "transparent" : day.ratio === null ? COLORS.borderSoft : COLORS.ember2 + alphaHex(0.15 + day.ratio * 0.75),
-                      }}
-                    />
-                  ))}
-                </div>
-              );
-            })}
-          </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(52px, 1fr))", gap: 6 }}>
+          {yearWeeklyHeatmap.map((w) => (
+            <div
+              key={w.weekStart}
+              title={`KW ${w.weekNum}: ${w.ratio === null ? "keine Daten" : Math.round(w.ratio * 100) + "% erfüllt"}`}
+              style={{
+                background: w.ratio === null ? COLORS.bgSoft : COLORS.ember2 + alphaHex(0.15 + w.ratio * 0.75),
+                border: `1px solid ${COLORS.borderSoft}`, borderRadius: 8, padding: "6px 4px", textAlign: "center",
+              }}
+            >
+              <div style={{ fontSize: 9, fontWeight: 700, color: COLORS.textFaint, letterSpacing: "0.02em" }}>KW{w.weekNum}</div>
+              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: "JetBrains Mono, monospace", color: w.ratio === null ? COLORS.textFaint : COLORS.text }}>
+                {w.ratio === null ? "–" : `${Math.round(w.ratio * 100)}%`}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
