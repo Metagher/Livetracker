@@ -1849,7 +1849,7 @@ function MiniStat({ label, value, unit }) {
 }
 
 /* ============================================================
-   @section DASHBOARD — Startseite: Punkte, Coach-Teaser, Aufgaben, Habits, Ziele
+   @section DASHBOARD — Startseite: Punkte, Coach-Teaser, Geburtstage, Aufgaben, Habits
    ============================================================ */
 function motivationLine(active, entries, allStats) {
   const done = active.filter((h) => dayStatus(h, entries, todayKey()) === "success").length;
@@ -3787,12 +3787,18 @@ function personStats(person) {
 }
 
 // Tage bis zum nächsten Geburtstag (0 = heute), unabhängig vom gespeicherten Jahrgang.
+// Ein Geburtstag am 29. Februar fällt in Nicht-Schaltjahren auf den 28. Februar,
+// statt (durch JS-Datumsüberlauf) fälschlich auf den 1. März zu rutschen.
+function isLeapYear(y) {
+  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+}
 function daysUntilBirthday(birthday, today = new Date()) {
   if (!birthday) return null;
   const b = keyToDate(birthday);
   const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  let next = new Date(todayMid.getFullYear(), b.getMonth(), b.getDate());
-  if (next < todayMid) next = new Date(todayMid.getFullYear() + 1, b.getMonth(), b.getDate());
+  const dayInYear = (y) => (b.getMonth() === 1 && b.getDate() === 29 && !isLeapYear(y)) ? 28 : b.getDate();
+  let next = new Date(todayMid.getFullYear(), b.getMonth(), dayInYear(todayMid.getFullYear()));
+  if (next < todayMid) next = new Date(todayMid.getFullYear() + 1, b.getMonth(), dayInYear(todayMid.getFullYear() + 1));
   return Math.round((next - todayMid) / 86400000);
 }
 
