@@ -771,6 +771,7 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
   const [unit, setUnit] = useState(initial?.unit || "");
   const [goalIds, setGoalIds] = useState(initial?.goalIds || []);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const viewport = useVisualViewport();
 
   const toggleGoal = (goalId) => {
     setGoalIds((prev) => prev.includes(goalId) ? prev.filter((id) => id !== goalId) : [...prev, goalId]);
@@ -779,7 +780,7 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
   const canSave = name.trim().length > 0;
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
@@ -1004,6 +1005,32 @@ const ghostBtn = {
   background: "transparent", color: COLORS.textMuted, fontWeight: 600, fontSize: 13.5, cursor: "pointer",
 };
 
+// iOS Safari verkleinert bei eingeblendeter Tastatur nur den "visual viewport", nicht
+// den Layout-Viewport - ein "position: fixed"-Overlay bleibt also auf volle Bildschirmhöhe
+// gestreckt und rutscht mitsamt seinem unteren Rand (und damit den Speichern/Schließen-
+// Buttons) hinter die Tastatur. Dieser Hook liefert Höhe + Offset des tatsächlich
+// sichtbaren Bereichs, damit die Modal-Overlays sich live daran ausrichten können.
+function useVisualViewport() {
+  const getSnapshot = () => {
+    if (typeof window === "undefined") return { height: 0, top: 0 };
+    if (!window.visualViewport) return { height: window.innerHeight, top: 0 };
+    return { height: window.visualViewport.height, top: window.visualViewport.offsetTop };
+  };
+  const [viewport, setViewport] = useState(getSnapshot);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.visualViewport) return;
+    const update = () => setViewport(getSnapshot());
+    window.visualViewport.addEventListener("resize", update);
+    window.visualViewport.addEventListener("scroll", update);
+    update();
+    return () => {
+      window.visualViewport.removeEventListener("resize", update);
+      window.visualViewport.removeEventListener("scroll", update);
+    };
+  }, []);
+  return viewport;
+}
+
 /* ============================================================
    @section GOAL-MODAL — Anlegen/Bearbeiten eines Ziels
    GOAL MODAL (Create / Edit)
@@ -1014,11 +1041,12 @@ function GoalModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
   const [category, setCategory] = useState(initial?.category || "");
   const [points, setPoints] = useState(initial?.points ?? 100);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const viewport = useVisualViewport();
 
   const canSave = title.trim().length > 0;
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
@@ -1209,11 +1237,12 @@ function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
   const [points, setPoints] = useState(initial?.points ?? 1);
   const [dueDate, setDueDate] = useState(initial?.dueDate || "");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const viewport = useVisualViewport();
 
   const canSave = title.trim().length > 0;
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
@@ -1293,11 +1322,12 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup })
   const [birthday, setBirthday] = useState(initial?.birthday || "");
   const [color, setColor] = useState(initial?.color || HABIT_COLORS[0]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const viewport = useVisualViewport();
 
   const canSave = name.trim().length > 0;
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
           <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
@@ -1493,6 +1523,7 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
   const stats = useMemo(() => simulateHabit(habit, entries, todayKey()), [habit, entries]);
   const dailyMap = useMemo(() => Object.fromEntries(stats.daily.map((d) => [d.date, d])), [stats]);
   const Icon = iconFor(habit.icon);
+  const viewport = useVisualViewport();
 
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [selectedDay, setSelectedDay] = useState(todayKey());
@@ -1537,7 +1568,7 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
   const isFuture = (k) => k > todayKey();
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
