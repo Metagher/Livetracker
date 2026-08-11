@@ -978,7 +978,13 @@ function CategoryPicker({ value, categories, onChange, onAddCategory }) {
    ============================================================ */
 const overlayStyle = {
   position: "fixed", left: 0, right: 0, bottom: "auto", background: "rgba(10,10,12,0.6)", backdropFilter: "blur(3px)",
-  display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 12,
+  // Muss über MobileHeader (150) und BottomNav (200) liegen, sonst verdeckt die
+  // Navigation auf iPhones die Schließen-/Speichern-Aktionen des Dialogs.
+  display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+  paddingTop: "max(12px, env(safe-area-inset-top, 0px))",
+  paddingRight: 12,
+  paddingBottom: "max(12px, env(safe-area-inset-bottom, 0px))",
+  paddingLeft: 12,
   boxSizing: "border-box", overflow: "hidden",
 };
 // Fixer Rahmen (Kopf+Body+Footer als Flex-Spalte) statt "position: sticky" für den
@@ -996,7 +1002,10 @@ const modalBodyStyle = {
 const labelStyle = { display: "block", fontSize: 11.5, fontWeight: 600, color: COLORS.textMuted, marginBottom: 6, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.04em" };
 const modalFooterStyle = {
   display: "flex", justifyContent: "space-between", alignItems: "center",
-  padding: "14px 24px", flexShrink: 0,
+  gap: 10, flexWrap: "wrap",
+  paddingTop: 14, paddingRight: 24,
+  paddingBottom: "max(14px, env(safe-area-inset-bottom, 0px))", paddingLeft: 24,
+  flexShrink: 0,
   background: COLORS.surface, borderTop: `1px solid ${COLORS.borderSoft}`,
 };
 const inputStyle = {
