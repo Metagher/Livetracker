@@ -2324,7 +2324,6 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     const yearTotal = months.reduce((s, m) => s + m.points, 0);
     return { months, yearTotal };
   }, [dailyPointsMap, viewYear]);
-  const maxAbsMonthPoints = Math.max(1, ...yearData.months.map((m) => Math.abs(m.points)));
 
   // Erfüllungsquote pro Tag (success/fail je Habit, "empty" zählt nicht mit) - Basis
   // für die Wochen-Trendlinie und die Jahres-Heatmap.
@@ -2340,12 +2339,17 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
 
   const periodAnalysis = useMemo(() => {
     const today = new Date();
+    const isValidProgressDate = (key) => {
+      if (typeof key !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return false;
+      const date = keyToDate(key);
+      return !Number.isNaN(date.getTime()) && toKey(date) === key && key <= todayKey();
+    };
     const allTrackedKeys = [
       ...Object.keys(dailyStatusMap),
       ...(persons || []).flatMap((person) => person.meetings || []),
       ...(tasks || []).map((task) => task.completedAt).filter(Boolean),
       ...(goals || []).map((goal) => goal.achievedAt).filter(Boolean),
-    ].sort();
+    ].filter(isValidProgressDate).sort();
     const startKey = rangeDays === "all"
       ? (allTrackedKeys[0] || todayKey())
       : toKey(addDays(today, -(rangeDays - 1)));
@@ -2411,6 +2415,11 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     const startKey = periodAnalysis.startKey;
     const endKey = todayKey();
     const useWeeks = rangeDays !== "all" && rangeDays <= 90;
+    const startDate = keyToDate(startKey);
+    const totalMonths = (new Date().getFullYear() - startDate.getFullYear()) * 12 + new Date().getMonth() - startDate.getMonth() + 1;
+    // Bei sehr langen Gesamtzeiträumen verhindert eine Jahresaggregation
+    // hunderte oder tausende Diagrammbalken, ohne Treffen wegzulassen.
+    const useYears = rangeDays === "all" && totalMonths > 120;
     const rows = (persons || []).map((person) => {
       const dates = (person.meetings || []).filter((date) => date >= startKey && date <= endKey);
       return { person, count: dates.length, lastDate: dates.slice().sort().at(-1) || null };
@@ -2431,13 +2440,19 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
         buckets.push({ key: bucketStart, label: `KW ${isoWeekNumber(cursor)}`, fullLabel: `${shortDate(bucketStart)} – ${shortDate(bucketEnd)}`, treffen: count });
         cursor = addDays(cursor, 7);
       }
-    } else {
+    } else if (!useYears) {
       let cursor = startOfMonth(keyToDate(startKey));
       while (cursor <= keyToDate(endKey)) {
         const prefix = toKey(cursor).slice(0, 7);
         const count = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
         buckets.push({ key: prefix, label: cursor.toLocaleDateString("de-DE", { month: "short", year: "2-digit" }), fullLabel: cursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" }), treffen: count });
         cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+      }
+    } else {
+      for (let year = startDate.getFullYear(); year <= new Date().getFullYear(); year++) {
+        const prefix = String(year);
+        const count = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
+        buckets.push({ key: prefix, label: prefix, fullLabel: prefix, treffen: count });
       }
     }
     return { rows, buckets, currentCount, previousCount, delta: previousCount === null ? null : currentCount - previousCount };
@@ -2447,64 +2462,80 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     const thisWeekStart = startOfWeek(new Date());
     return Array.from({ length: 12 }, (_, i) => {
       const wStart = addDays(thisWeekStart, -7 * (11 - i));
+      const wEnd = addDays(wStart, 6);
+      if (toKey(wEnd) < periodAnalysis.startKey) return null;
       let success = 0, fail = 0;
       for (let d = 0; d < 7; d++) {
-        const s = dailyStatusMap[toKey(addDays(wStart, d))];
+        const key = toKey(addDays(wStart, d));
+        if (key < periodAnalysis.startKey || key > todayKey()) continue;
+        const s = dailyStatusMap[key];
         if (s) { success += s.success; fail += s.fail; }
       }
       const tracked = success + fail;
       return { week: `KW ${isoWeekNumber(wStart)}`, rate: tracked > 0 ? Math.round((success / tracked) * 100) : null, tracked };
-    });
-  }, [dailyStatusMap]);
+    }).filter(Boolean);
+  }, [dailyStatusMap, periodAnalysis.startKey]);
 
-  const habitComparison = useMemo(() => {
-    return active
-      .map((h, i) => ({ habit: h, stats: allStats[i] }))
-      .filter(({ stats }) => stats.totalSuccess + stats.totalFail > 0)
-      .sort((a, b) => b.stats.successRate - a.stats.successRate);
-  }, [active, allStats]);
-
-  const yearWeeklyHeatmap = useMemo(() => buildYearWeeklyHeatmap(viewYear, dailyStatusMap), [viewYear, dailyStatusMap]);
+  const filteredDailyStatusMap = useMemo(() => Object.fromEntries(
+    Object.entries(dailyStatusMap).filter(([key]) => key >= periodAnalysis.startKey && key <= todayKey())
+  ), [dailyStatusMap, periodAnalysis.startKey]);
+  const yearWeeklyHeatmap = useMemo(() => buildYearWeeklyHeatmap(viewYear, filteredDailyStatusMap), [viewYear, filteredDailyStatusMap]);
 
   const monthlyCategoryStats = useMemo(() => {
     return Array.from({ length: 12 }, (_, m) => {
       const prefix = `${viewYear}-${pad(m + 1)}`;
       const map = {};
       active.forEach((h, i) => {
-        const pts = allStats[i].daily.filter((d) => d.date.startsWith(prefix)).reduce((s, d) => s + d.delta, 0);
+        const pts = allStats[i].daily.filter((d) => d.date.startsWith(prefix) && d.date >= periodAnalysis.startKey && d.date <= todayKey()).reduce((s, d) => s + d.delta, 0);
         if (pts !== 0) {
           const cat = categoryOf(h);
           map[cat] = (map[cat] || 0) + pts;
         }
       });
       (tasks || []).forEach((t) => {
-        if (t.completed && t.completedAt && t.completedAt.startsWith(prefix)) {
+        if (t.completed && t.completedAt && t.completedAt.startsWith(prefix) && t.completedAt >= periodAnalysis.startKey && t.completedAt <= todayKey()) {
           const cat = categoryOf(t);
           map[cat] = (map[cat] || 0) + t.points;
         }
       });
       (goals || []).forEach((g) => {
-        if (g.achieved && g.achievedAt && g.achievedAt.startsWith(prefix)) {
+        if (g.achieved && g.achievedAt && g.achievedAt.startsWith(prefix) && g.achievedAt >= periodAnalysis.startKey && g.achievedAt <= todayKey()) {
           const cat = categoryOf(g);
           map[cat] = (map[cat] || 0) + g.points;
         }
       });
       return Object.entries(map).map(([category, points]) => ({ category, points })).sort((a, b) => b.points - a.points);
     });
-  }, [active, allStats, tasks, goals, viewYear]);
+  }, [active, allStats, tasks, goals, viewYear, periodAnalysis.startKey]);
   const [hoveredMonth, setHoveredMonth] = useState(null);
 
-  const achievedGoals = (goals || []).filter((g) => g.achieved).sort((a, b) => (b.achievedAt || "").localeCompare(a.achievedAt || ""));
+  const achievedGoals = (goals || []).filter((g) => g.achieved && g.achievedAt >= periodAnalysis.startKey && g.achievedAt <= todayKey()).sort((a, b) => (b.achievedAt || "").localeCompare(a.achievedAt || ""));
   const openGoalsCount = (goals || []).filter((g) => !g.achieved).length;
   const goalPointsSum = achievedGoals.reduce((s, g) => s + g.points, 0);
+  const filteredYearData = useMemo(() => {
+    const months = yearData.months.map((month) => {
+      const prefix = `${viewYear}-${pad(month.month + 1)}`;
+      const points = Object.entries(dailyPointsMap).filter(([key]) => key.startsWith(prefix) && key >= periodAnalysis.startKey && key <= todayKey()).reduce((sum, [, value]) => sum + value, 0);
+      return { ...month, points };
+    });
+    return { months, yearTotal: months.reduce((sum, month) => sum + month.points, 0) };
+  }, [yearData, viewYear, dailyPointsMap, periodAnalysis.startKey]);
+  const filteredMaxAbsMonthPoints = Math.max(1, ...filteredYearData.months.map((month) => Math.abs(month.points)));
+  const periodAchievements = achievements.filter((achievement) => achievement.date >= periodAnalysis.startKey && achievement.date <= todayKey());
   const periodPointsSeries = useMemo(() => {
     let running = 0;
-    return Object.keys(dailyPointsMap).sort()
+    const series = Object.keys(dailyPointsMap).sort()
       .filter((key) => key >= periodAnalysis.startKey && key <= todayKey())
       .map((key) => {
         running += dailyPointsMap[key];
         return { key, date: shortDate(key), points: dailyPointsMap[key], total: running };
       });
+    if (series.length <= 500) return series;
+    const step = Math.ceil(series.length / 500);
+    const reduced = series.filter((_, index) => index % step === 0);
+    const last = series[series.length - 1];
+    if (reduced[reduced.length - 1]?.key !== last.key) reduced.push(last);
+    return reduced;
   }, [dailyPointsMap, periodAnalysis.startKey]);
 
   return (
@@ -2644,7 +2675,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
       </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
-        <SectionLabel>Erfüllungsquote (letzte 12 Wochen)</SectionLabel>
+        <SectionLabel>Erfüllungsquote im gewählten Zeitraum</SectionLabel>
         <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
           Anteil erfüllter Habits je Woche - unabhängig von der Punkte-Skalierung, zeigt also direkt, wie konsequent du warst.
         </p>
@@ -2664,7 +2695,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
       </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
-        <SectionLabel>Aktivität {viewYear}</SectionLabel>
+        <SectionLabel>Aktivität {viewYear} im gewählten Zeitraum</SectionLabel>
         <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
           Pro Kalenderwoche kumuliert - je heller, desto größer der Anteil erfüllter Habits in dieser Woche.
         </p>
@@ -2702,16 +2733,16 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
           padding: "12px 14px", borderRadius: 12,
           background: `linear-gradient(135deg, ${COLORS.ember1}14, ${COLORS.ember2}0a)`, border: `1px solid ${COLORS.ember1}33`,
         }}>
-          <span style={{ fontSize: 12.5, color: COLORS.textMuted, fontWeight: 600 }}>Jahrespunkte {viewYear}</span>
-          <span style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, color: yearData.yearTotal < 0 ? COLORS.coral : COLORS.ember2 }}>
-            {yearData.yearTotal >= 0 ? "+" : ""}{yearData.yearTotal}
+          <span style={{ fontSize: 12.5, color: COLORS.textMuted, fontWeight: 600 }}>Punkte im Filter · {viewYear}</span>
+          <span style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, color: filteredYearData.yearTotal < 0 ? COLORS.coral : COLORS.ember2 }}>
+            {filteredYearData.yearTotal >= 0 ? "+" : ""}{filteredYearData.yearTotal}
           </span>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: 10 }}>
-          {yearData.months.map((m) => {
+          {filteredYearData.months.map((m) => {
             const isFutureMonth = viewYear === currentYear && m.month > new Date().getMonth();
-            const barPct = Math.max(3, Math.round((Math.abs(m.points) / maxAbsMonthPoints) * 100));
+            const barPct = Math.max(3, Math.round((Math.abs(m.points) / filteredMaxAbsMonthPoints) * 100));
             const color = m.points > 0 ? COLORS.ember2 : m.points < 0 ? COLORS.coral : COLORS.textFaint;
             const monthCats = monthlyCategoryStats[m.month];
             const maxAbsMonthCat = Math.max(1, ...monthCats.map((c) => Math.abs(c.points)));
@@ -2824,7 +2855,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
           <SectionLabel>Ziele</SectionLabel>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
             <StatCard label="Erreicht" value={achievedGoals.length} suffix="" accent={COLORS.mint} />
-            <StatCard label="Offen" value={openGoalsCount} suffix="" accent={COLORS.textFaint} />
+            <StatCard label="Aktuell offen" value={openGoalsCount} suffix="" accent={COLORS.textFaint} />
             <StatCard label="Punkte aus Zielen" value={goalPointsSum} suffix="" accent={COLORS.ember2} />
           </div>
           {achievedGoals.length === 0 ? (
@@ -2845,25 +2876,28 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
       )}
 
       <div style={{ marginBottom: 8 }}>
-        <SectionLabel>Erfolge</SectionLabel>
+        <SectionLabel>Freigeschaltete Erfolge im gewählten Zeitraum</SectionLabel>
+        {periodAchievements.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurde kein neuer Erfolg freigeschaltet.</div>
+        ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
-          {ACHIEVEMENT_DEFS.map((a) => {
-            const unlocked = achievements.find((u) => u.id === a.id);
+          {periodAchievements.map((unlocked) => {
+            const a = ACHIEVEMENT_DEFS.find((definition) => definition.id === unlocked.id);
+            if (!a) return null;
             const AIcon = a.icon;
             return (
               <div key={a.id} style={{
                 display: "flex", flexDirection: "column", gap: 8, padding: 14, borderRadius: 14,
-                background: unlocked ? a.color + "14" : COLORS.surface,
-                border: `1px solid ${unlocked ? a.color + "55" : COLORS.borderSoft}`,
-                opacity: unlocked ? 1 : 0.45,
+                background: a.color + "14", border: `1px solid ${a.color + "55"}`,
               }}>
                 <AIcon size={20} style={{ color: a.color }} />
                 <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{a.label}</div>
-                {unlocked && <div style={{ fontSize: 10.5, color: COLORS.textFaint, fontFamily: "JetBrains Mono, monospace" }}>{shortDate(unlocked.date)}</div>}
+                <div style={{ fontSize: 10.5, color: COLORS.textFaint, fontFamily: "JetBrains Mono, monospace" }}>{shortDate(unlocked.date)}</div>
               </div>
             );
           })}
         </div>
+        )}
       </div>
     </div>
   );
