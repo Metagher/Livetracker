@@ -3948,6 +3948,16 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     setTimeout(() => setCelebrateId(null), 1200);
   };
 
+  // Löscht genau ein Treffen anhand seiner Position. Das ist wichtig, weil an
+  // demselben Tag mehrere Treffen eingetragen sein können.
+  const deleteMeeting = (personId, meetingIndex) => {
+    const next = persons.map((p) => {
+      if (p.id !== personId) return p;
+      return { ...p, meetings: (p.meetings || []).filter((_, index) => index !== meetingIndex) };
+    });
+    persistPersons(next);
+  };
+
   // Trägt eine Verbindung bidirektional ein: bei personId als `type`, bei targetId
   // automatisch als Gegenstück (z. B. "Elternteil von" <-> "Kind von").
   const addRelationship = (personId, targetId, type) => {
@@ -4026,6 +4036,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
                     person={p}
                     celebrating={celebrateId === p.id}
                     onLogMeeting={() => logMeeting(p)}
+                    onDeleteMeeting={(meetingIndex) => deleteMeeting(p.id, meetingIndex)}
                     onEdit={() => { setModalPerson(p); setShowModal(true); }}
                   />
                 ))}
@@ -4060,20 +4071,21 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   );
 }
 
-function PersonRow({ person, celebrating, onLogMeeting, onEdit }) {
+function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onEdit }) {
   const stats = personStats(person);
   const initial = (person.name || "?").trim().charAt(0).toUpperCase();
+  const [showHistory, setShowHistory] = useState(false);
 
   return (
-    <div
-      onClick={onLogMeeting}
-      title="Klicken, um ein Treffen zu zählen"
-      style={{
-        display: "flex", alignItems: "center", gap: 14, padding: "14px 16px",
-        background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14,
-        position: "relative", overflow: "hidden", cursor: "pointer",
-      }}
-    >
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, overflow: "hidden" }}>
+      <div
+        onClick={onLogMeeting}
+        title="Klicken, um ein Treffen zu zählen"
+        style={{
+          display: "flex", alignItems: "center", gap: 14, padding: "14px 16px",
+          position: "relative", overflow: "hidden", cursor: "pointer",
+        }}
+      >
       {celebrating && <Confetti trigger={person.id + "_" + Date.now()} />}
       <div style={{
         width: 40, height: 40, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
@@ -4100,16 +4112,97 @@ function PersonRow({ person, celebrating, onLogMeeting, onEdit }) {
         {person.info && (
           <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4, lineHeight: 1.4, whiteSpace: "pre-wrap" }}>{person.info}</div>
         )}
-        <div style={{ display: "flex", gap: 12, marginTop: 6, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: COLORS.textFaint }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", marginTop: 6, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: COLORS.textFaint }}>
           <span>{stats.total} Treffen gesamt</span>
           <span>{stats.thisWeek} diese Woche</span>
           <span>{stats.thisMonth} diesen Monat</span>
         </div>
       </div>
 
-      <div onClick={(e) => e.stopPropagation()}>
+      <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+        <button onClick={() => setShowHistory((value) => !value)} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5 }}>
+          {showHistory ? "Weniger" : "Verlauf"}
+        </button>
         <IconButton onClick={onEdit} title="Bearbeiten"><Pencil size={14} /></IconButton>
       </div>
+      </div>
+
+      {showHistory && (
+        <MeetingHistory person={person} onDeleteMeeting={onDeleteMeeting} />
+      )}
+    </div>
+  );
+}
+
+function MeetingHistory({ person, onDeleteMeeting }) {
+  const [confirmIndex, setConfirmIndex] = useState(null);
+  const meetings = (person.meetings || [])
+    .map((date, index) => ({ date, index }))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.index - a.index);
+
+  // Die letzten zwölf Kalendermonate werden immer gezeigt, auch Monate ohne
+  // Treffen. So ist eine Entwicklung statt nur einer Liste erkennbar.
+  const monthlyData = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 12 }, (_, offset) => {
+      const date = new Date(now.getFullYear(), now.getMonth() - 11 + offset, 1);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      return {
+        key,
+        label: date.toLocaleDateString("de-DE", { month: "short" }),
+        fullLabel: date.toLocaleDateString("de-DE", { month: "long", year: "numeric" }),
+        treffen: meetings.filter((meeting) => meeting.date.startsWith(key)).length,
+      };
+    });
+  }, [person.meetings]);
+
+  return (
+    <div style={{ borderTop: `1px solid ${COLORS.borderSoft}`, padding: "16px", cursor: "default" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>
+        Treffen im Zeitverlauf
+      </div>
+      {meetings.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Treffen eingetragen.</div>
+      ) : (
+        <>
+          <div style={{ width: "100%", height: 180, marginBottom: 14 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={monthlyData} margin={{ top: 8, right: 4, left: -26, bottom: 0 }}>
+                <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" stroke={COLORS.textFaint} fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis allowDecimals={false} stroke={COLORS.textFaint} fontSize={10} tickLine={false} axisLine={false} />
+                <Tooltip
+                  contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }}
+                  labelFormatter={(_, payload) => payload?.[0]?.payload?.fullLabel || ""}
+                  formatter={(value) => [value, value === 1 ? "Treffen" : "Treffen"]}
+                />
+                <Bar dataKey="treffen" fill={person.color || COLORS.mint} radius={[5, 5, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {meetings.map((meeting) => (
+              <div key={`${meeting.date}-${meeting.index}`} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                padding: "8px 10px", borderRadius: 9, background: COLORS.bgSoft,
+              }}>
+                <span style={{ fontSize: 12.5, color: COLORS.textMuted }}>{longDate(meeting.date)}</span>
+                {confirmIndex === meeting.index ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <button onClick={() => setConfirmIndex(null)} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11 }}>Abbrechen</button>
+                    <button onClick={() => { onDeleteMeeting(meeting.index); setConfirmIndex(null); }} style={{
+                      ...ghostBtn, padding: "5px 8px", fontSize: 11, color: COLORS.coral, borderColor: COLORS.coral,
+                    }}>Löschen</button>
+                  </div>
+                ) : (
+                  <IconButton onClick={() => setConfirmIndex(meeting.index)} title="Treffen löschen" danger><Trash2 size={13} /></IconButton>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
