@@ -721,16 +721,18 @@ function IconButton({ children, onClick, title, danger }) {
   );
 }
 
-function EmberDot({ level, size = 9, negative = false }) {
+function EmberDot({ level, size = 9, negative = false, skip = false }) {
   // level 0..1 -> Glut-Intensität (positiv) bzw. Intensität von "nicht erfüllt" (negativ)
+  // skip -> übersprungener Tag (z. B. Urlaub): eigene, neutrale Farbe statt Erfolg/Fehlschlag
   const glow = 4 + level * 14;
   let bg = COLORS.borderSoft;
-  if (level > 0) bg = negative ? COLORS.coral : `linear-gradient(135deg, ${COLORS.ember1}, ${COLORS.ember2})`;
+  if (skip) bg = COLORS.violet;
+  else if (level > 0) bg = negative ? COLORS.coral : `linear-gradient(135deg, ${COLORS.ember1}, ${COLORS.ember2})`;
   return (
     <div style={{
       width: size, height: size, borderRadius: 3, background: bg,
-      boxShadow: level > 0 && !negative ? `0 0 ${glow}px rgba(255,122,69,${0.25 + level * 0.35})` : "none",
-      opacity: level <= 0 ? 0.5 : negative ? 0.85 : 1,
+      boxShadow: level > 0 && !negative && !skip ? `0 0 ${glow}px rgba(255,122,69,${0.25 + level * 0.35})` : "none",
+      opacity: skip ? 0.75 : level <= 0 ? 0.5 : negative ? 0.85 : 1,
     }} />
   );
 }
@@ -1565,6 +1567,7 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
             const size = isMobile ? 7 : 9;
             if (st === "success") return <EmberDot key={k} level={Math.max(posLevel, 0.35)} size={size} />;
             if (st === "fail") return <EmberDot key={k} level={Math.max(negLevel, 0.35)} negative size={size} />;
+            if (st === "skip") return <EmberDot key={k} level={1} skip size={size} />;
             return <EmberDot key={k} level={0} size={size} />;
           })}
         </div>
@@ -2337,7 +2340,12 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
 
   const periodAnalysis = useMemo(() => {
     const today = new Date();
-    const allTrackedKeys = Object.keys(dailyStatusMap).sort();
+    const allTrackedKeys = [
+      ...Object.keys(dailyStatusMap),
+      ...(persons || []).flatMap((person) => person.meetings || []),
+      ...(tasks || []).map((task) => task.completedAt).filter(Boolean),
+      ...(goals || []).map((goal) => goal.achievedAt).filter(Boolean),
+    ].sort();
     const startKey = rangeDays === "all"
       ? (allTrackedKeys[0] || todayKey())
       : toKey(addDays(today, -(rangeDays - 1)));
@@ -2398,6 +2406,42 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     const meetings = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= startKey && date <= todayKey()).length, 0);
     return { startKey, calendarDays, current, previous, rateDelta, habitRows, categories, completedTasks, achievedGoals, meetings };
   }, [rangeDays, dailyStatusMap, dailyPointsMap, active, allStats, tasks, goals, persons]);
+
+  const meetingAnalysis = useMemo(() => {
+    const startKey = periodAnalysis.startKey;
+    const endKey = todayKey();
+    const useWeeks = rangeDays !== "all" && rangeDays <= 90;
+    const rows = (persons || []).map((person) => {
+      const dates = (person.meetings || []).filter((date) => date >= startKey && date <= endKey);
+      return { person, count: dates.length, lastDate: dates.slice().sort().at(-1) || null };
+    }).filter((row) => row.count > 0).sort((a, b) => b.count - a.count || a.person.name.localeCompare(b.person.name, "de"));
+
+    const previousCount = periodAnalysis.previous
+      ? (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= toKey(addDays(keyToDate(startKey), -periodAnalysis.calendarDays)) && date < startKey).length, 0)
+      : null;
+    const currentCount = rows.reduce((sum, row) => sum + row.count, 0);
+
+    const buckets = [];
+    if (useWeeks) {
+      let cursor = startOfWeek(keyToDate(startKey));
+      while (cursor <= keyToDate(endKey)) {
+        const bucketStart = toKey(cursor);
+        const bucketEnd = toKey(addDays(cursor, 6));
+        const count = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= bucketStart && date <= bucketEnd && date >= startKey && date <= endKey).length, 0);
+        buckets.push({ key: bucketStart, label: `KW ${isoWeekNumber(cursor)}`, fullLabel: `${shortDate(bucketStart)} – ${shortDate(bucketEnd)}`, treffen: count });
+        cursor = addDays(cursor, 7);
+      }
+    } else {
+      let cursor = startOfMonth(keyToDate(startKey));
+      while (cursor <= keyToDate(endKey)) {
+        const prefix = toKey(cursor).slice(0, 7);
+        const count = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
+        buckets.push({ key: prefix, label: cursor.toLocaleDateString("de-DE", { month: "short", year: "2-digit" }), fullLabel: cursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" }), treffen: count });
+        cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+      }
+    }
+    return { rows, buckets, currentCount, previousCount, delta: previousCount === null ? null : currentCount - previousCount };
+  }, [persons, periodAnalysis.startKey, periodAnalysis.calendarDays, periodAnalysis.previous, rangeDays]);
 
   const weeklySuccessRate = useMemo(() => {
     const thisWeekStart = startOfWeek(new Date());
@@ -2519,6 +2563,72 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
           </div>
         </div>
       )}
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+        <SectionLabel>Soziale Kontakte und Treffen</SectionLabel>
+        <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>
+          Entwicklung deiner persönlichen Treffen im gewählten Zeitraum und Verteilung auf die einzelnen Personen.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(3, 1fr)", gap: 10, marginBottom: 16 }}>
+          <StatCard label="Treffen" value={meetingAnalysis.currentCount} suffix="" accent={COLORS.mint} />
+          <StatCard label="Getroffene Personen" value={meetingAnalysis.rows.length} suffix="" accent={COLORS.violet} />
+          <StatCard
+            label="Zur Vorperiode"
+            value={meetingAnalysis.delta === null ? "–" : `${meetingAnalysis.delta > 0 ? "+" : ""}${meetingAnalysis.delta}`}
+            suffix=" Treffen"
+            accent={meetingAnalysis.delta === null ? COLORS.textFaint : meetingAnalysis.delta >= 0 ? COLORS.mint : COLORS.coral}
+          />
+        </div>
+
+        {meetingAnalysis.currentCount === 0 ? (
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint, padding: "14px", background: COLORS.bgSoft, borderRadius: 10 }}>
+            In diesem Zeitraum sind noch keine Treffen eingetragen.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "minmax(0, 1.35fr) minmax(240px, .65fr)", gap: 18 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>Zeitverlauf</div>
+              <ResponsiveContainer width="100%" height={210}>
+                <BarChart data={meetingAnalysis.buckets} margin={{ top: 8, right: 4, left: -25, bottom: 0 }}>
+                  <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fill: COLORS.textFaint, fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={18} />
+                  <YAxis allowDecimals={false} tick={{ fill: COLORS.textFaint, fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }}
+                    labelFormatter={(_, payload) => payload?.[0]?.payload?.fullLabel || ""}
+                    formatter={(value) => [value, "Treffen"]}
+                  />
+                  <Bar dataKey="treffen" fill={COLORS.mint} radius={[5, 5, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>Nach Person</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {meetingAnalysis.rows.map((row) => {
+                  const maxCount = meetingAnalysis.rows[0]?.count || 1;
+                  return (
+                    <div key={row.person.id}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, minWidth: 0 }}>
+                          <Users size={12} style={{ color: row.person.color || COLORS.violet, flexShrink: 0 }} />
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.person.name}</span>
+                        </span>
+                        <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: COLORS.textMuted, flexShrink: 0 }}>{row.count}×</span>
+                      </div>
+                      <div style={{ height: 6, background: COLORS.bgSoft, borderRadius: 4, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${Math.max(4, row.count / maxCount * 100)}%`, background: row.person.color || COLORS.violet, borderRadius: 4 }} />
+                      </div>
+                      {row.lastDate && <div style={{ fontSize: 10.5, color: COLORS.textFaint, marginTop: 3 }}>Zuletzt: {shortDate(row.lastDate)}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
         <SectionLabel>Punkteentwicklung im gewählten Zeitraum</SectionLabel>
