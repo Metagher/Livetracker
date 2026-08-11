@@ -3380,7 +3380,7 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
    Langfristige Ziele mit Beschreibung und Punktebelohnung bei
    Erfüllung. Werden dem Coach als Kontext für die Habits gegeben.
    ============================================================ */
-function GoalsPage({ goals, persistGoals, habits, entries, categories, onAddCategory }) {
+function GoalsPage({ goals, persistGoals, habits, persistHabits, entries, categories, onAddCategory }) {
   const [showModal, setShowModal] = useState(false);
   const [modalGoal, setModalGoal] = useState(undefined);
 
@@ -3427,6 +3427,11 @@ function GoalsPage({ goals, persistGoals, habits, entries, categories, onAddCate
 
   const handleDelete = (id) => {
     persistGoals(goals.filter((g) => g.id !== id));
+    // Entfernt die Verknüpfung bei Habits, die auf das gelöschte Ziel zeigten,
+    // statt eine verwaiste Goal-ID in habit.goalIds zurückzulassen.
+    persistHabits(habits.map((h) => (h.goalIds || []).includes(id)
+      ? { ...h, goalIds: h.goalIds.filter((gid) => gid !== id) }
+      : h));
     setShowModal(false);
     setModalGoal(undefined);
   };
@@ -4356,6 +4361,12 @@ function SettingsPage({
         )}
       </div>
 
+      <DataValidation
+        habits={habits} entries={entries} persistEntries={persistEntries}
+        goals={goals} persistHabits={persistHabits}
+        persons={persons} persistPersons={persistPersons}
+      />
+
       <CategoryManager
         categories={categories} persistCategories={persistCategories}
         habits={habits} tasks={tasks} goals={goals}
@@ -4368,6 +4379,111 @@ function SettingsPage({
       />
 
       <ConnectionSettings onKeyChange={onAnthropicKeyChange} />
+    </div>
+  );
+}
+
+/* ============================================================
+   @section DATA-VALIDATION — findet + bereinigt verwaiste Daten in Supabase
+   (Tages-Einträge gelöschter Habits, goalIds gelöschter Ziele, Personen-
+   Verbindungen zu gelöschten Personen). Die Löschpfade selbst räumen diese
+   Fälle inzwischen direkt auf; dieses Tool ist für bereits bestehende
+   Altlasten aus der Zeit davor bzw. als Sicherheitsnetz gedacht.
+   ============================================================ */
+function DataValidation({ habits, entries, persistEntries, goals, persistHabits, persons, persistPersons }) {
+  const [result, setResult] = useState(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleaned, setCleaned] = useState(false);
+
+  const analyze = () => {
+    const habitIds = new Set(habits.map((h) => h.id));
+    const goalIds = new Set(goals.map((g) => g.id));
+    const personIds = new Set(persons.map((p) => p.id));
+
+    let orphanedEntries = 0;
+    Object.values(entries).forEach((day) => {
+      Object.keys(day || {}).forEach((habitId) => { if (!habitIds.has(habitId)) orphanedEntries += 1; });
+    });
+
+    let orphanedGoalRefs = 0;
+    habits.forEach((h) => (h.goalIds || []).forEach((gid) => { if (!goalIds.has(gid)) orphanedGoalRefs += 1; }));
+
+    let orphanedRelationships = 0;
+    persons.forEach((p) => (p.relationships || []).forEach((r) => { if (!personIds.has(r.personId)) orphanedRelationships += 1; }));
+
+    setCleaned(false);
+    setResult({ orphanedEntries, orphanedGoalRefs, orphanedRelationships });
+  };
+
+  const cleanUp = async () => {
+    setCleaning(true);
+    const habitIds = new Set(habits.map((h) => h.id));
+    const goalIds = new Set(goals.map((g) => g.id));
+    const personIds = new Set(persons.map((p) => p.id));
+
+    const nextEntries = {};
+    Object.keys(entries).forEach((dateKey) => {
+      const day = {};
+      Object.keys(entries[dateKey] || {}).forEach((habitId) => {
+        if (habitIds.has(habitId)) day[habitId] = entries[dateKey][habitId];
+      });
+      if (Object.keys(day).length > 0) nextEntries[dateKey] = day;
+    });
+
+    await persistEntries(nextEntries);
+    await persistHabits(habits.map((h) => ({ ...h, goalIds: (h.goalIds || []).filter((gid) => goalIds.has(gid)) })));
+    await persistPersons(persons.map((p) => ({ ...p, relationships: (p.relationships || []).filter((r) => personIds.has(r.personId)) })));
+
+    setCleaning(false);
+    setCleaned(true);
+    setResult(null);
+  };
+
+  const totalIssues = result ? result.orphanedEntries + result.orphanedGoalRefs + result.orphanedRelationships : 0;
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginTop: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8 }}>
+        <div style={{ width: 30, height: 30, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", background: COLORS.coral + "1f" }}>
+          <RefreshCw size={15} style={{ color: COLORS.coral }} />
+        </div>
+        <span style={{ fontWeight: 700, fontSize: 14.5 }}>Datenvalidierung</span>
+      </div>
+      <p style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+        Prüft, ob in Supabase noch verwaiste Daten von gelöschten Habits, Zielen oder Personen herumliegen (z. B. Tages-Einträge eines längst gelöschten Habits), und räumt sie auf Wunsch auf.
+      </p>
+
+      <button onClick={analyze} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 7 }}>
+        <RefreshCw size={14} /> Daten prüfen
+      </button>
+
+      {cleaned && (
+        <div style={{ display: "flex", alignItems: "center", gap: 7, color: COLORS.mint, fontSize: 12.5, marginTop: 12 }}>
+          <Check size={14} /> Bereinigung abgeschlossen.
+        </div>
+      )}
+
+      {result && (
+        totalIssues === 0 ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 7, color: COLORS.mint, fontSize: 12.5, marginTop: 12 }}>
+            <Check size={14} /> Keine verwaisten Daten gefunden.
+          </div>
+        ) : (
+          <div style={{ marginTop: 14, padding: 14, borderRadius: 12, background: COLORS.coral + "0f", border: `1px solid ${COLORS.coral}44` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8, color: COLORS.coral, fontWeight: 700, fontSize: 13 }}>
+              <AlertTriangle size={15} /> {totalIssues} verwaiste {totalIssues === 1 ? "Eintrag" : "Einträge"} gefunden
+            </div>
+            <ul style={{ margin: "0 0 12px", paddingLeft: 18, fontSize: 12.5, color: COLORS.textMuted, lineHeight: 1.7 }}>
+              {result.orphanedEntries > 0 && <li>{result.orphanedEntries}× Tages-Eintrag eines gelöschten Habits</li>}
+              {result.orphanedGoalRefs > 0 && <li>{result.orphanedGoalRefs}× Habit verweist auf ein gelöschtes Ziel</li>}
+              {result.orphanedRelationships > 0 && <li>{result.orphanedRelationships}× Personen-Verbindung zeigt auf eine gelöschte Person</li>}
+            </ul>
+            <button onClick={cleanUp} disabled={cleaning} style={{ ...primaryBtn, background: `linear-gradient(135deg, ${COLORS.coral}, #FF9B85)`, color: "#2B0810", opacity: cleaning ? 0.6 : 1 }}>
+              {cleaning ? "Bereinige …" : "Jetzt bereinigen"}
+            </button>
+          </div>
+        )
+      )}
     </div>
   );
 }
@@ -4856,6 +4972,15 @@ export default function LifeOS() {
 
   const handleDeleteHabit = (id) => {
     persistHabits(habits.filter((h) => h.id !== id));
+    // Räumt auch die Tages-Einträge des gelöschten Habits auf, statt sie als
+    // verwaiste Datensätze in Supabase zurückzulassen.
+    const nextEntries = {};
+    Object.keys(entries).forEach((dateKey) => {
+      const day = { ...entries[dateKey] };
+      delete day[id];
+      if (Object.keys(day).length > 0) nextEntries[dateKey] = day;
+    });
+    persistEntries(nextEntries);
     setShowModal(false);
     setModalHabit(undefined);
   };
@@ -4943,7 +5068,7 @@ export default function LifeOS() {
           {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} />}
           {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
           {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} />}
-          {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} entries={entries} categories={categories} onAddCategory={addCategory} />}
+          {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} />}
           {page === "settings" && (
