@@ -977,8 +977,9 @@ function CategoryPicker({ value, categories, onChange, onAddCategory }) {
    @section MODAL-STYLES — von Habit-/Ziel-/Aufgaben-Modal gemeinsam genutzte Stile
    ============================================================ */
 const overlayStyle = {
-  position: "fixed", inset: 0, background: "rgba(10,10,12,0.6)", backdropFilter: "blur(3px)",
+  position: "fixed", left: 0, right: 0, bottom: "auto", background: "rgba(10,10,12,0.6)", backdropFilter: "blur(3px)",
   display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 12,
+  boxSizing: "border-box", overflow: "hidden",
 };
 // Fixer Rahmen (Kopf+Body+Footer als Flex-Spalte) statt "position: sticky" für den
 // Footer: sticky erwies sich auf iOS bei langen Formularen + eingeblendeter Tastatur
@@ -986,7 +987,7 @@ const overlayStyle = {
 // als normales Flex-Geschwisterelement immer sichtbar darunter.
 const modalStyle = {
   background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 18,
-  width: "100%", maxHeight: "88vh", boxShadow: "0 30px 60px rgba(0,0,0,0.5)",
+  width: "100%", maxHeight: "100%", boxShadow: "0 30px 60px rgba(0,0,0,0.5)",
   display: "flex", flexDirection: "column", overflow: "hidden",
 };
 const modalBodyStyle = {
@@ -1326,16 +1327,25 @@ function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
 /* ============================================================
    @section PERSON-MODAL — Anlegen/Bearbeiten einer Person
    ============================================================ */
-function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup }) {
+function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, persons, onAddRelationship, onRemoveRelationship }) {
   const [name, setName] = useState(initial?.name || "");
   const [info, setInfo] = useState(initial?.info || "");
   const [category, setCategory] = useState(initial?.category || "");
   const [birthday, setBirthday] = useState(initial?.birthday || "");
   const [color, setColor] = useState(initial?.color || HABIT_COLORS[0]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [newRelType, setNewRelType] = useState(RELATIONSHIP_TYPES[0].key);
+  const [newRelTarget, setNewRelTarget] = useState("");
   const viewport = useVisualViewport();
 
   const canSave = name.trim().length > 0;
+  const otherPersons = (persons || []).filter((p) => p.id !== initial?.id);
+  // Immer die aktuellen Beziehungen aus der Live-Liste lesen (nicht aus initial),
+  // da onAddRelationship/onRemoveRelationship sofort persistieren, während initial
+  // nur eine Momentaufnahme beim Öffnen des Modals ist - sonst würde ein späteres
+  // "Speichern" gerade hinzugefügte/entfernte Verbindungen wieder überschreiben.
+  const livePerson = initial ? (persons || []).find((p) => p.id === initial.id) : null;
+  const relationships = (livePerson || initial)?.relationships || [];
 
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
@@ -1377,6 +1387,54 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup })
             }} />
           ))}
         </div>
+
+        {initial && (
+          <>
+            <label style={labelStyle}>Verbindungen</label>
+            {relationships.length === 0 ? (
+              <div style={{ fontSize: 12, color: COLORS.textFaint, marginBottom: 10 }}>Noch keine Verbindungen eingetragen.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+                {relationships.map((r) => {
+                  const target = (persons || []).find((p) => p.id === r.personId);
+                  return (
+                    <div key={r.personId} style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "7px 10px",
+                      background: COLORS.bgSoft, borderRadius: 9, fontSize: 12.5,
+                    }}>
+                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <strong>{relationshipLabel(r.type)}</strong> {target ? target.name : "(gelöschte Person)"}
+                      </span>
+                      <IconButton onClick={() => onRemoveRelationship(initial.id, r.personId)} title="Entfernen" danger><X size={13} /></IconButton>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {otherPersons.length === 0 ? (
+              <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginBottom: 6 }}>Lege weitere Personen an, um Verbindungen einzutragen.</div>
+            ) : (
+              <div style={{ display: "flex", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                <select value={newRelType} onChange={(e) => setNewRelType(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: "1 1 150px", cursor: "pointer" }}>
+                  {RELATIONSHIP_TYPES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+                </select>
+                <select value={newRelTarget} onChange={(e) => setNewRelTarget(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: "1 1 150px", cursor: "pointer" }}>
+                  <option value="">Person wählen …</option>
+                  {otherPersons.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <button
+                  type="button"
+                  disabled={!newRelTarget}
+                  onClick={() => { onAddRelationship(initial.id, newRelTarget, newRelType); setNewRelTarget(""); }}
+                  style={{ ...primaryBtn, opacity: newRelTarget ? 1 : 0.5, cursor: newRelTarget ? "pointer" : "not-allowed" }}
+                >
+                  Hinzufügen
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
         <div style={modalFooterStyle}>
@@ -1397,6 +1455,7 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup })
                 id: initial?.id || `person_${Date.now()}`,
                 name: name.trim(), info: info.trim(), category: category.trim(), birthday: birthday || null, color,
                 meetings: initial?.meetings || [],
+                relationships,
                 createdAt: initial?.createdAt || todayKey(),
               })}
               style={{ ...primaryBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
@@ -3789,7 +3848,30 @@ function TaskRow({ task, onToggle, onEdit }) {
    Ein Klick auf eine Person zählt ein Treffen (Datum wird gespeichert).
    Pro Person gibt es eine Auswertung (Treffen gesamt/Woche/Monat, zuletzt
    getroffen) sowie ein freies Info-Feld für Notizen zur Person.
+   Verbindungen zwischen Personen (person.relationships = [{personId, type}])
+   sind bidirektional: wird bei A "Elternteil von B" eingetragen, entsteht bei
+   B automatisch "Kind von A". Gender-neutral gehalten (kein Geschlechtsfeld
+   nötig), damit auch nicht-familiäre Verbindungen (Freund/in) abbildbar sind.
    ============================================================ */
+const RELATIONSHIP_TYPES = [
+  { key: "parent", label: "Elternteil von", inverseKey: "child" },
+  { key: "child", label: "Kind von", inverseKey: "parent" },
+  { key: "sibling", label: "Geschwister von", inverseKey: "sibling" },
+  { key: "partner", label: "Partner/in von", inverseKey: "partner" },
+  { key: "grandparent", label: "Großelternteil von", inverseKey: "grandchild" },
+  { key: "grandchild", label: "Enkelkind von", inverseKey: "grandparent" },
+  { key: "auntUncle", label: "Onkel/Tante von", inverseKey: "nibling" },
+  { key: "nibling", label: "Neffe/Nichte von", inverseKey: "auntUncle" },
+  { key: "cousin", label: "Cousin/Cousine von", inverseKey: "cousin" },
+  { key: "friend", label: "Freund/in von", inverseKey: "friend" },
+];
+function relationshipLabel(key) {
+  return (RELATIONSHIP_TYPES.find((r) => r.key === key) || {}).label || key;
+}
+function inverseRelationshipKey(key) {
+  return (RELATIONSHIP_TYPES.find((r) => r.key === key) || {}).inverseKey || key;
+}
+
 function personStats(person) {
   const meetings = (person.meetings || []).slice().sort();
   const total = meetings.length;
@@ -3821,9 +3903,11 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   const [showModal, setShowModal] = useState(false);
   const [modalPerson, setModalPerson] = useState(undefined);
   const [celebrateId, setCelebrateId] = useState(null);
+  const [showNetwork, setShowNetwork] = useState(false);
 
   const totalMeetings = persons.reduce((s, p) => s + (p.meetings || []).length, 0);
   const metTodayCount = persons.filter((p) => (p.meetings || []).includes(todayKey())).length;
+  const relationshipCount = persons.reduce((s, p) => s + (p.relationships || []).length, 0) / 2;
 
   const handleSave = (person) => {
     const exists = persons.some((p) => p.id === person.id);
@@ -3834,7 +3918,11 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   };
 
   const handleDelete = (id) => {
-    persistPersons(persons.filter((p) => p.id !== id));
+    // Entfernt die Person + räumt Verbindungen auf, die von anderen Personen noch auf sie zeigen
+    const next = persons.filter((p) => p.id !== id).map((p) => ({
+      ...p, relationships: (p.relationships || []).filter((r) => r.personId !== id),
+    }));
+    persistPersons(next);
     setShowModal(false);
     setModalPerson(undefined);
   };
@@ -3846,23 +3934,59 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     setTimeout(() => setCelebrateId(null), 1200);
   };
 
+  // Trägt eine Verbindung bidirektional ein: bei personId als `type`, bei targetId
+  // automatisch als Gegenstück (z. B. "Elternteil von" <-> "Kind von").
+  const addRelationship = (personId, targetId, type) => {
+    if (!targetId || personId === targetId) return;
+    const inverseType = inverseRelationshipKey(type);
+    const next = persons.map((p) => {
+      if (p.id === personId) {
+        const rels = (p.relationships || []).filter((r) => r.personId !== targetId);
+        return { ...p, relationships: [...rels, { personId: targetId, type }] };
+      }
+      if (p.id === targetId) {
+        const rels = (p.relationships || []).filter((r) => r.personId !== personId);
+        return { ...p, relationships: [...rels, { personId, type: inverseType }] };
+      }
+      return p;
+    });
+    persistPersons(next);
+  };
+
+  const removeRelationship = (personId, targetId) => {
+    const next = persons.map((p) => {
+      if (p.id === personId) return { ...p, relationships: (p.relationships || []).filter((r) => r.personId !== targetId) };
+      if (p.id === targetId) return { ...p, relationships: (p.relationships || []).filter((r) => r.personId !== personId) };
+      return p;
+    });
+    persistPersons(next);
+  };
+
   const sorted = [...persons].sort((a, b) => a.name.localeCompare(b.name, "de"));
   const grouped = groupHabitsByCategory(sorted);
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Personen</h1>
-        <button onClick={() => { setModalPerson(undefined); setShowModal(true); }} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 6 }}>
-          <Plus size={15} /> Neue Person
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          {persons.length > 1 && (
+            <button onClick={() => setShowNetwork(true)} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 6 }}>
+              <Users size={15} /> Verbindungen
+            </button>
+          )}
+          <button onClick={() => { setModalPerson(undefined); setShowModal(true); }} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 6 }}>
+            <Plus size={15} /> Neue Person
+          </button>
+        </div>
       </div>
 
       {persons.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 26 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginBottom: 26 }}>
           <StatCard label="Personen" value={persons.length} suffix="" accent={COLORS.violet} />
           <StatCard label="Treffen gesamt" value={totalMeetings} suffix="" accent={COLORS.mint} />
           <StatCard label="Heute getroffen" value={metTodayCount} suffix="" accent={COLORS.ember2} />
+          {relationshipCount > 0 && <StatCard label="Verbindungen" value={relationshipCount} suffix="" accent={COLORS.coral} />}
         </div>
       )}
 
@@ -3902,9 +4026,20 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
           initial={modalPerson}
           groups={personGroups}
           onAddGroup={onAddPersonGroup}
+          persons={persons}
+          onAddRelationship={addRelationship}
+          onRemoveRelationship={removeRelationship}
           onClose={() => { setShowModal(false); setModalPerson(undefined); }}
           onSave={handleSave}
           onDelete={handleDelete}
+        />
+      )}
+
+      {showNetwork && (
+        <PersonNetworkView
+          persons={persons}
+          onClose={() => setShowNetwork(false)}
+          onEditPerson={(p) => { setShowNetwork(false); setModalPerson(p); setShowModal(true); }}
         />
       )}
     </div>
@@ -3960,6 +4095,100 @@ function PersonRow({ person, celebrating, onLogMeeting, onEdit }) {
 
       <div onClick={(e) => e.stopPropagation()}>
         <IconButton onClick={onEdit} title="Bearbeiten"><Pencil size={14} /></IconButton>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   @section PERSON-NETWORK-VIEW — Kreisförmige Verbindungs-Visualisierung aller Personen
+   Kein generationsweises Stammbaum-Layout (das bräuchte eine eigene Baum-Layout-
+   Logik), sondern ein Beziehungsnetz: alle Personen kreisförmig angeordnet,
+   Verbindungen als beschriftete Linien dazwischen. Klick auf eine Person öffnet
+   direkt deren Bearbeiten-Modal.
+   ============================================================ */
+function PersonNetworkView({ persons, onClose, onEditPerson }) {
+  const viewport = useVisualViewport();
+  const isMobile = useIsMobile();
+  const size = isMobile ? 340 : 560;
+  const center = size / 2;
+  const radius = Math.max(70, center - 70);
+
+  const nodePositions = useMemo(() => {
+    const map = {};
+    const count = Math.max(1, persons.length);
+    persons.forEach((p, i) => {
+      const angle = (i / count) * Math.PI * 2 - Math.PI / 2;
+      map[p.id] = { x: center + radius * Math.cos(angle), y: center + radius * Math.sin(angle) };
+    });
+    return map;
+  }, [persons, radius, center]);
+
+  // Jede Verbindung existiert bei beiden Personen (Gegenrichtung) - hier pro
+  // Paar nur einmal zeichnen, um doppelte Linien zu vermeiden.
+  const edges = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    persons.forEach((p) => {
+      (p.relationships || []).forEach((r) => {
+        const key = [p.id, r.personId].sort().join("|");
+        if (seen.has(key)) return;
+        const other = persons.find((x) => x.id === r.personId);
+        if (!other) return;
+        seen.add(key);
+        list.push({ from: p, to: other, label: relationshipLabel(r.type) });
+      });
+    });
+    return list;
+  }, [persons]);
+
+  return (
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
+      <div style={{ ...modalStyle, maxWidth: size + 80 }} onClick={(e) => e.stopPropagation()}>
+        <div style={modalBodyStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>Verbindungen</h2>
+              <p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Tippe auf eine Person, um sie zu bearbeiten.</p>
+            </div>
+            <IconButton onClick={onClose}><X size={16} /></IconButton>
+          </div>
+
+          {edges.length === 0 && (
+            <div style={{ fontSize: 12.5, color: COLORS.textFaint, textAlign: "center", padding: "12px 0 20px" }}>
+              Noch keine Verbindungen eingetragen - trage sie beim Bearbeiten einer Person ein.
+            </div>
+          )}
+
+          <div style={{ overflowX: "auto" }}>
+            <svg width={size} height={size} style={{ display: "block", margin: "0 auto" }}>
+              {edges.map((e, i) => {
+                const pa = nodePositions[e.from.id], pb = nodePositions[e.to.id];
+                const mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
+                return (
+                  <g key={i}>
+                    <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke={COLORS.borderSoft} strokeWidth={1.5} />
+                    <rect x={mx - 44} y={my - 8} width={88} height={15} rx={4} fill={COLORS.surface} />
+                    <text x={mx} y={my + 3} textAnchor="middle" fontSize={9} fill={COLORS.textMuted} fontFamily="Inter, sans-serif">{e.label}</text>
+                  </g>
+                );
+              })}
+              {persons.map((p) => {
+                const pos = nodePositions[p.id];
+                const initial = (p.name || "?").trim().charAt(0).toUpperCase();
+                return (
+                  <g key={p.id} onClick={() => onEditPerson(p)} style={{ cursor: "pointer" }}>
+                    <circle cx={pos.x} cy={pos.y} r={20} fill={p.color + "33"} stroke={p.color} strokeWidth={2} />
+                    <text x={pos.x} y={pos.y + 5} textAnchor="middle" fontSize={13} fontWeight={700} fill={p.color} fontFamily="Inter, sans-serif">{initial}</text>
+                    <text x={pos.x} y={pos.y + 34} textAnchor="middle" fontSize={10.5} fill={COLORS.text} fontFamily="Inter, sans-serif">
+                      {p.name.length > 12 ? p.name.slice(0, 11) + "…" : p.name}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        </div>
       </div>
     </div>
   );
