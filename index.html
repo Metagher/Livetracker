@@ -446,8 +446,13 @@ function isSuccess(habit, value) {
   return false;
 }
 
+// Sentinel-Wert für übersprungene Tage (z. B. Urlaub) - unabhängig von der
+// Tracking-Art des Habits, da echte Werte dort immer boolean/number sind.
+const SKIP_VALUE = "skip";
+
 function dayStatus(habit, entries, dateKey) {
   const v = entries?.[dateKey]?.[habit.id];
+  if (v === SKIP_VALUE) return "skip";
   if (v === undefined || v === null) return "empty";
   return isSuccess(habit, v) ? "success" : "fail";
 }
@@ -517,6 +522,10 @@ function simulateHabit(habit, entries, untilKey) {
       points += delta;
       totalFail += 1;
       if (negStreak > longestNeg) longestNeg = negStreak;
+    } else if (status === "skip") {
+      // Übersprungener Tag (z. B. Urlaub): gilt als nicht existent - weder
+      // Streak noch Punkte werden verändert, und er zählt nicht zu Erfolgs-
+      // quote/Tracked-Days. Streak & negStreak bleiben also unangetastet.
     } else {
       // "empty": nur heute zählt als "noch offen" (bricht nichts).
       // Vergangene ungetrackte Tage sind neutral (0 Punkte), brechen aber
@@ -1763,14 +1772,14 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
                   style={{
                     width: "100%", aspectRatio: "1", borderRadius: 11, cursor: future ? "default" : "pointer",
                     display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", gap: 1,
-                    background: st === "success" ? habit.color + "2e" : st === "fail" ? statusColor.fail + "26" : weekend ? COLORS.bgSoft : COLORS.surfaceRaised,
+                    background: st === "success" ? habit.color + "2e" : st === "fail" ? statusColor.fail + "26" : st === "skip" ? COLORS.violet + "22" : weekend ? COLORS.bgSoft : COLORS.surfaceRaised,
                     border: isSelected ? `2px solid ${habit.color}` : isToday ? `1.5px solid ${COLORS.textMuted}` : `1px solid ${COLORS.borderSoft}`,
                     opacity: future ? 0.35 : 1,
                     transition: "all .15s",
                   }}>
                   <span style={{
                     fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, lineHeight: 1,
-                    color: st === "success" ? habit.color : st === "fail" ? statusColor.fail : COLORS.text,
+                    color: st === "success" ? habit.color : st === "fail" ? statusColor.fail : st === "skip" ? COLORS.violet : COLORS.text,
                   }}>
                     {d.getDate()}
                   </span>
@@ -1800,6 +1809,7 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
                   )}
                   {st === "success" && <Flame size={10} style={{ position: "absolute", top: 4, right: 4, color: habit.color }} />}
                   {st === "fail" && <TrendingDown size={10} style={{ position: "absolute", top: 4, right: 4, color: statusColor.fail }} />}
+                  {st === "skip" && <span style={{ position: "absolute", top: 3, right: 3, fontSize: 9 }}>🌴</span>}
                 </button>
               </div>
             );
@@ -1809,16 +1819,34 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
         <div style={{ display: "flex", gap: 14, marginBottom: 18, fontSize: 11, color: COLORS.textFaint, flexWrap: "wrap" }}>
           <LegendDot color={habit.color} label="Erfüllt" />
           <LegendDot color={statusColor.fail} label="Nicht erfüllt" />
+          <LegendDot color={COLORS.violet} label="Übersprungen" />
           <LegendDot color={COLORS.ember2} label="Wochenende" />
         </div>
 
         {/* Editor für den ausgewählten Tag */}
         <div style={{ background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 12, padding: 14 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
-            {selectedDay === todayKey() ? "Heute" : longDate(selectedDay)}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+              {selectedDay === todayKey() ? "Heute" : longDate(selectedDay)}
+            </div>
+            <button
+              onClick={() => onToggle(habit.id, selectedDay, selectedVal === SKIP_VALUE ? undefined : SKIP_VALUE)}
+              style={{
+                ...ghostBtn, padding: "5px 10px", fontSize: 11.5, display: "flex", alignItems: "center", gap: 5,
+                border: `1px solid ${selectedVal === SKIP_VALUE ? COLORS.violet : COLORS.border}`,
+                background: selectedVal === SKIP_VALUE ? COLORS.violet + "1f" : "transparent",
+                color: selectedVal === SKIP_VALUE ? COLORS.violet : COLORS.textMuted,
+              }}
+            >
+              🌴 {selectedVal === SKIP_VALUE ? "Übersprungen" : "Überspringen"}
+            </button>
           </div>
 
-          {habit.trackingType === "boolean" ? (
+          {selectedVal === SKIP_VALUE ? (
+            <div style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.6 }}>
+              Dieser Tag zählt als nicht existent (z. B. Urlaub) - Streak und Punkte bleiben unverändert. Klick erneut auf "Übersprungen", um das rückgängig zu machen.
+            </div>
+          ) : habit.trackingType === "boolean" ? (
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={() => onToggle(habit.id, selectedDay, true)} style={{
                 ...ghostBtn, flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
@@ -2248,10 +2276,11 @@ function buildYearWeeklyHeatmap(year, dailyStatusMap) {
    @section PROGRESS-PAGE — "Fortschritt": Recharts-Diagramme + Erfolge-Grid
    PROGRESS PAGE (Diagramme + Erfolge)
    ============================================================ */
-function ProgressPage({ habits, entries, achievements, goals, tasks }) {
+function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) {
   const isMobile = useIsMobile();
   const active = habits;
   const allStats = useMemo(() => active.map((h) => simulateHabit(h, entries, todayKey())), [active, entries]);
+  const [rangeDays, setRangeDays] = useState(30);
 
   const dailyPointsMap = useMemo(() => {
     const map = {};
@@ -2305,6 +2334,70 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
     }));
     return map;
   }, [allStats]);
+
+  const periodAnalysis = useMemo(() => {
+    const today = new Date();
+    const allTrackedKeys = Object.keys(dailyStatusMap).sort();
+    const startKey = rangeDays === "all"
+      ? (allTrackedKeys[0] || todayKey())
+      : toKey(addDays(today, -(rangeDays - 1)));
+    const calendarDays = rangeDays === "all"
+      ? Math.max(1, Math.round((keyToDate(todayKey()) - keyToDate(startKey)) / 86400000) + 1)
+      : rangeDays;
+    const previousStartKey = rangeDays === "all" ? null : toKey(addDays(keyToDate(startKey), -calendarDays));
+    const previousEndKey = rangeDays === "all" ? null : toKey(addDays(keyToDate(startKey), -1));
+
+    const summarize = (from, to) => {
+      let success = 0, fail = 0, activeDays = 0, points = 0;
+      Object.entries(dailyStatusMap).forEach(([key, value]) => {
+        if (key < from || key > to) return;
+        success += value.success;
+        fail += value.fail;
+        if (value.success + value.fail > 0) activeDays += 1;
+      });
+      Object.entries(dailyPointsMap).forEach(([key, value]) => {
+        if (key >= from && key <= to) points += value;
+      });
+      const tracked = success + fail;
+      return { success, fail, tracked, activeDays, points, rate: tracked ? Math.round(success / tracked * 100) : null };
+    };
+
+    const current = summarize(startKey, todayKey());
+    const previous = previousStartKey ? summarize(previousStartKey, previousEndKey) : null;
+    const rateDelta = current.rate !== null && previous?.rate !== null ? current.rate - previous.rate : null;
+
+    const habitRows = active.map((habit, index) => {
+      const currentDays = allStats[index].daily.filter((d) => d.date >= startKey && d.date <= todayKey() && d.status !== "empty");
+      const previousDays = previousStartKey
+        ? allStats[index].daily.filter((d) => d.date >= previousStartKey && d.date <= previousEndKey && d.status !== "empty")
+        : [];
+      const success = currentDays.filter((d) => d.status === "success").length;
+      const previousSuccess = previousDays.filter((d) => d.status === "success").length;
+      const rate = currentDays.length ? Math.round(success / currentDays.length * 100) : null;
+      const previousRate = previousDays.length ? Math.round(previousSuccess / previousDays.length * 100) : null;
+      return {
+        habit, stats: allStats[index], tracked: currentDays.length, rate, previousRate,
+        delta: rate !== null && previousRate !== null ? rate - previousRate : null,
+      };
+    }).filter((row) => row.tracked > 0).sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
+
+    const categoryMap = {};
+    habitRows.forEach((row) => {
+      const category = categoryOf(row.habit);
+      if (!categoryMap[category]) categoryMap[category] = { category, success: 0, tracked: 0 };
+      const days = allStats[active.indexOf(row.habit)].daily.filter((d) => d.date >= startKey && d.date <= todayKey() && d.status !== "empty");
+      categoryMap[category].success += days.filter((d) => d.status === "success").length;
+      categoryMap[category].tracked += days.length;
+    });
+    const categories = Object.values(categoryMap)
+      .map((item) => ({ ...item, rate: item.tracked ? Math.round(item.success / item.tracked * 100) : 0 }))
+      .sort((a, b) => b.rate - a.rate);
+
+    const completedTasks = (tasks || []).filter((task) => task.completedAt >= startKey && task.completedAt <= todayKey()).length;
+    const achievedGoals = (goals || []).filter((goal) => goal.achievedAt >= startKey && goal.achievedAt <= todayKey()).length;
+    const meetings = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= startKey && date <= todayKey()).length, 0);
+    return { startKey, calendarDays, current, previous, rateDelta, habitRows, categories, completedTasks, achievedGoals, meetings };
+  }, [rangeDays, dailyStatusMap, dailyPointsMap, active, allStats, tasks, goals, persons]);
 
   const weeklySuccessRate = useMemo(() => {
     const thisWeekStart = startOfWeek(new Date());
@@ -2360,15 +2453,77 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
   const achievedGoals = (goals || []).filter((g) => g.achieved).sort((a, b) => (b.achievedAt || "").localeCompare(a.achievedAt || ""));
   const openGoalsCount = (goals || []).filter((g) => !g.achieved).length;
   const goalPointsSum = achievedGoals.reduce((s, g) => s + g.points, 0);
+  const periodPointsSeries = useMemo(() => {
+    let running = 0;
+    return Object.keys(dailyPointsMap).sort()
+      .filter((key) => key >= periodAnalysis.startKey && key <= todayKey())
+      .map((key) => {
+        running += dailyPointsMap[key];
+        return { key, date: shortDate(key), points: dailyPointsMap[key], total: running };
+      });
+  }, [dailyPointsMap, periodAnalysis.startKey]);
 
   return (
     <div>
-      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, marginBottom: 20 }}>Fortschritt</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Fortschritt</h1>
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Was wird besser, wo stagnierst du und welche Lebensbereiche brauchen Aufmerksamkeit?</div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[{ value: 30, label: "30 Tage" }, { value: 90, label: "90 Tage" }, { value: 365, label: "1 Jahr" }, { value: "all", label: "Gesamt" }].map((option) => (
+            <button key={option.value} onClick={() => setRangeDays(option.value)} style={{
+              ...ghostBtn, padding: "7px 10px", fontSize: 11.5,
+              color: rangeDays === option.value ? COLORS.ember2 : COLORS.textMuted,
+              borderColor: rangeDays === option.value ? COLORS.ember2 : COLORS.border,
+              background: rangeDays === option.value ? COLORS.ember2 + "14" : "transparent",
+            }}>{option.label}</button>
+          ))}
+        </div>
+      </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
-        <SectionLabel>Gesamtpunkte über Zeit</SectionLabel>
+        <SectionLabel>Deine Entwicklung im gewählten Zeitraum</SectionLabel>
+        <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>
+          {shortDate(periodAnalysis.startKey)} bis heute{periodAnalysis.previous ? " · Veränderung gegenüber dem gleich langen Zeitraum davor" : ""}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
+          <StatCard label="Erfüllungsquote" value={periodAnalysis.current.rate ?? "–"} suffix={periodAnalysis.current.rate === null ? "" : "%"} accent={COLORS.mint} />
+          <StatCard label="Trend zur Vorperiode" value={periodAnalysis.rateDelta === null ? "–" : `${periodAnalysis.rateDelta > 0 ? "+" : ""}${periodAnalysis.rateDelta}`} suffix={periodAnalysis.rateDelta === null ? "" : " %-Pkt."} accent={periodAnalysis.rateDelta === null ? COLORS.textFaint : periodAnalysis.rateDelta >= 0 ? COLORS.mint : COLORS.coral} />
+          <StatCard label="Aktive Tage" value={periodAnalysis.current.activeDays} suffix={`/ ${periodAnalysis.calendarDays}`} accent={COLORS.violet} />
+          <StatCard label="Punkte im Zeitraum" value={periodAnalysis.current.points >= 0 ? `+${periodAnalysis.current.points}` : periodAnalysis.current.points} suffix="" accent={periodAnalysis.current.points >= 0 ? COLORS.ember2 : COLORS.coral} />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(5, 1fr)", gap: 8 }}>
+          <div style={{ padding: "9px 11px", background: COLORS.bgSoft, borderRadius: 9, fontSize: 12, color: COLORS.textMuted }}><strong style={{ color: COLORS.mint }}>{periodAnalysis.current.success}</strong> erfüllt</div>
+          <div style={{ padding: "9px 11px", background: COLORS.bgSoft, borderRadius: 9, fontSize: 12, color: COLORS.textMuted }}><strong style={{ color: COLORS.coral }}>{periodAnalysis.current.fail}</strong> nicht erfüllt</div>
+          <div style={{ padding: "9px 11px", background: COLORS.bgSoft, borderRadius: 9, fontSize: 12, color: COLORS.textMuted }}><strong style={{ color: COLORS.violet }}>{periodAnalysis.completedTasks}</strong> Tasks erledigt</div>
+          <div style={{ padding: "9px 11px", background: COLORS.bgSoft, borderRadius: 9, fontSize: 12, color: COLORS.textMuted }}><strong style={{ color: COLORS.ember2 }}>{periodAnalysis.achievedGoals}</strong> Ziele erreicht</div>
+          <div style={{ padding: "9px 11px", background: COLORS.bgSoft, borderRadius: 9, fontSize: 12, color: COLORS.textMuted }}><strong style={{ color: COLORS.mint }}>{periodAnalysis.meetings}</strong> Treffen</div>
+        </div>
+      </div>
+
+      {periodAnalysis.categories.length > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+          <SectionLabel>Lebensbereiche im Vergleich</SectionLabel>
+          <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>Erfüllungsquote deiner Habits nach Kategorie. So erkennst du, welche Bereiche stabil laufen und wo Entwicklungspotenzial liegt.</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {periodAnalysis.categories.map((category) => (
+              <div key={category.category}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 5, fontSize: 12.5 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: categoryColor(category.category) }} />{category.category}</span>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", color: COLORS.textMuted }}>{category.rate}% · {category.tracked} Einträge</span>
+                </div>
+                <div style={{ height: 8, background: COLORS.bgSoft, borderRadius: 5, overflow: "hidden" }}><div style={{ height: "100%", width: `${category.rate}%`, background: categoryColor(category.category), borderRadius: 5 }} /></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+        <SectionLabel>Punkteentwicklung im gewählten Zeitraum</SectionLabel>
         <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={combinedDaily}>
+          <LineChart data={periodPointsSeries}>
             <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} minTickGap={30} />
             <YAxis tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={false} tickLine={false} />
@@ -2518,12 +2673,13 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
       </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
-        <SectionLabel>Habit-Vergleich</SectionLabel>
-        {habitComparison.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine getrackten Tage vorhanden.</div>
+        <SectionLabel>Habits im Detail</SectionLabel>
+        <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>Quote und Veränderung beziehen sich auf den oben gewählten Zeitraum. Damit werden aktuelle Verbesserungen nicht mehr von alten Daten verdeckt.</p>
+        {periodAnalysis.habitRows.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurden noch keine Habits getrackt.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 4 }}>
-            {habitComparison.map(({ habit, stats }) => {
+            {periodAnalysis.habitRows.map(({ habit, stats, rate, tracked, delta }) => {
               const Icon = iconFor(habit.icon);
               return (
                 <div key={habit.id}>
@@ -2537,10 +2693,14 @@ function ProgressPage({ habits, entries, achievements, goals, tasks }) {
                         </span>
                       )}
                     </span>
-                    <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12.5, fontWeight: 700, color: habit.color, flexShrink: 0 }}>{stats.successRate}%</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>
+                      <span style={{ color: COLORS.textFaint }}>{tracked} Einträge</span>
+                      {delta !== null && <span style={{ color: delta >= 0 ? COLORS.mint : COLORS.coral }}>{delta > 0 ? "+" : ""}{delta} %-Pkt.</span>}
+                      <strong style={{ color: habit.color, fontSize: 12.5 }}>{rate}%</strong>
+                    </span>
                   </div>
                   <div style={{ height: 7, borderRadius: 4, background: COLORS.bgSoft, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${stats.successRate}%`, borderRadius: 4, background: habit.color }} />
+                    <div style={{ height: "100%", width: `${rate}%`, borderRadius: 4, background: habit.color }} />
                   </div>
                 </div>
               );
@@ -2921,7 +3081,8 @@ function buildDaySummary(dateKey, habitRows, journalHtml, goals, tasksForDay) {
   const lines = habitRows.map(({ habit, entry }) => {
     const linkedTitles = (habit.goalIds || []).map((gid) => (goals || []).find((g) => g.id === gid)?.title).filter(Boolean);
     const goalLink = linkedTitles.length > 0 ? `, zahlt ein auf Ziel(e): ${linkedTitles.map((t) => `"${t}"`).join(", ")}` : "";
-    return `- "${habit.name}"${habit.description ? ` — Bedeutung für die Person: "${habit.description}"` : ""}: ${entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : "kein Eintrag"}${goalLink}`;
+    const statusText = entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : entry.status === "skip" ? "bewusst übersprungen (z. B. Urlaub) - zählt nicht negativ" : "kein Eintrag";
+    return `- "${habit.name}"${habit.description ? ` — Bedeutung für die Person: "${habit.description}"` : ""}: ${statusText}${goalLink}`;
   }).join("\n");
   const journalText = stripHtml(journalHtml);
   const goalLines = (goals || []).map((g) =>
@@ -2988,7 +3149,7 @@ function buildWeekSummary(weekDays, perHabitDailyMap, journal, goals, tasksForWe
   const dayLines = weekDays.map((k) => {
     const rows = perHabitDailyMap.map(({ habit, map }) => ({ habit, entry: map[k] })).filter(({ entry }) => entry !== undefined);
     const habitLine = rows.map(({ habit, entry }) =>
-      `${habit.name}: ${entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : "offen"}`
+      `${habit.name}: ${entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : entry.status === "skip" ? "übersprungen (Urlaub)" : "offen"}`
     ).join(", ");
     const journalText = stripHtml(journal[k]?.text);
     return `${longDate(k)}${habitLine ? ` — ${habitLine}` : ""}${journalText ? `\nTagebuch: ${journalText}` : ""}`;
@@ -3113,7 +3274,7 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
       const rows = perHabitDailyMap.map(({ habit, map }) => ({ habit, entry: map[k] })).filter(({ entry }) => entry !== undefined);
       const total = rows.reduce((s, { entry }) => s + entry.delta, 0);
       const habitLines = rows.map(({ habit, entry }) =>
-        `- ${habit.name}: ${entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : "offen"} (${entry.delta >= 0 ? "+" : ""}${entry.delta})`
+        `- ${habit.name}: ${entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : entry.status === "skip" ? "übersprungen (Urlaub)" : "offen"} (${entry.delta >= 0 ? "+" : ""}${entry.delta})`
       ).join("\n");
 
       let md = `## ${longDate(k)}\n\n`;
@@ -3291,10 +3452,10 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{habit.name}</span>
                   <span style={{
                     fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 6, textTransform: "uppercase", letterSpacing: "0.03em",
-                    color: st === "success" ? habit.color : st === "fail" ? COLORS.coral : COLORS.textFaint,
-                    background: st === "success" ? habit.color + "1f" : st === "fail" ? COLORS.coral + "1f" : COLORS.surfaceRaised,
+                    color: st === "success" ? habit.color : st === "fail" ? COLORS.coral : st === "skip" ? COLORS.violet : COLORS.textFaint,
+                    background: st === "success" ? habit.color + "1f" : st === "fail" ? COLORS.coral + "1f" : st === "skip" ? COLORS.violet + "1f" : COLORS.surfaceRaised,
                   }}>
-                    {st === "success" ? "Erfüllt" : st === "fail" ? "Nicht erfüllt" : "Offen"}
+                    {st === "success" ? "Erfüllt" : st === "fail" ? "Nicht erfüllt" : st === "skip" ? "Übersprungen" : "Offen"}
                   </span>
                   <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, fontWeight: 600, minWidth: 34, textAlign: "right", color: entry.delta > 0 ? habit.color : entry.delta < 0 ? COLORS.coral : COLORS.textFaint }}>
                     {entry.delta >= 0 ? "+" : ""}{entry.delta}
@@ -5167,7 +5328,7 @@ export default function LifeOS() {
               onCreate={() => { setModalHabit(undefined); setShowModal(true); }}
             />
           )}
-          {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} />}
+          {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} persons={persons} />}
           {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
           {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} />}
