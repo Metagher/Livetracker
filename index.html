@@ -442,8 +442,31 @@ function isSuccess(habit, value) {
   if (habit.trackingType === "boolean") return value === true;
   if (habit.trackingType === "count") return Number(value) >= Number(habit.target || 1);
   if (habit.trackingType === "time") return Number(value) >= Number(habit.target || 1);
+  // "clock": Uhrzeit-Vergleich (Minuten seit Mitternacht) gegen eine Vorgabe -
+  // je nach timeDirection ist "früher als" oder "später als" die Vorgabe erfüllt.
+  if (habit.trackingType === "clock") {
+    if (typeof value !== "number" || Number.isNaN(value)) return false;
+    return habit.timeDirection === "after" ? value >= Number(habit.target || 0) : value <= Number(habit.target || 0);
+  }
+  // "value" bleibt aus Kompatibilitätsgründen für bereits bestehende Habits
+  // erhalten (jede eingetragene Zahl zählt als erfüllt), ist aber im Habit-
+  // Modal nicht mehr neu auswählbar - siehe "Anzahl" mit optionaler Einheit.
   if (habit.trackingType === "value") return typeof value === "number" && !Number.isNaN(value);
   return false;
+}
+
+// Minuten seit Mitternacht <-> "HH:MM" für die Uhrzeit-Tracking-Art.
+function minutesToClock(mins) {
+  if (typeof mins !== "number" || Number.isNaN(mins)) return "";
+  const h = Math.floor(mins / 60) % 24;
+  const m = Math.round(mins % 60);
+  return `${pad(h)}:${pad(m)}`;
+}
+function clockToMinutes(hhmm) {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
 }
 
 // Sentinel-Wert für übersprungene Tage (z. B. Urlaub) - unabhängig von der
@@ -721,18 +744,22 @@ function IconButton({ children, onClick, title, danger }) {
   );
 }
 
+// Kleine Tages-Kacheln: erfüllt = Grün, nicht erfüllt = Rot, übersprungen (z. B. Urlaub) = Blau.
+const TILE_SUCCESS = COLORS.mint;
+const TILE_FAIL = "#F0454D";
+const TILE_SKIP = "#4DA6FF";
+
 function EmberDot({ level, size = 9, negative = false, skip = false }) {
-  // level 0..1 -> Glut-Intensität (positiv) bzw. Intensität von "nicht erfüllt" (negativ)
-  // skip -> übersprungener Tag (z. B. Urlaub): eigene, neutrale Farbe statt Erfolg/Fehlschlag
+  // level 0..1 -> Intensität (Glow-Stärke) für erfüllte bzw. nicht erfüllte Tage
   const glow = 4 + level * 14;
   let bg = COLORS.borderSoft;
-  if (skip) bg = COLORS.violet;
-  else if (level > 0) bg = negative ? COLORS.coral : `linear-gradient(135deg, ${COLORS.ember1}, ${COLORS.ember2})`;
+  if (skip) bg = TILE_SKIP;
+  else if (level > 0) bg = negative ? TILE_FAIL : TILE_SUCCESS;
   return (
     <div style={{
       width: size, height: size, borderRadius: 3, background: bg,
-      boxShadow: level > 0 && !negative && !skip ? `0 0 ${glow}px rgba(255,122,69,${0.25 + level * 0.35})` : "none",
-      opacity: skip ? 0.75 : level <= 0 ? 0.5 : negative ? 0.85 : 1,
+      boxShadow: skip ? "none" : level > 0 ? `0 0 ${glow}px ${negative ? "rgba(240,69,77," : "rgba(74,222,158,"}${0.25 + level * 0.35})` : "none",
+      opacity: skip ? 0.85 : level <= 0 ? 0.5 : negative ? 0.9 : 1,
     }} />
   );
 }
@@ -780,6 +807,7 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
   const [trackingType, setTrackingType] = useState(initial?.trackingType || "boolean");
   const [target, setTarget] = useState(initial?.target || 1);
   const [unit, setUnit] = useState(initial?.unit || "");
+  const [timeDirection, setTimeDirection] = useState(initial?.timeDirection || "before");
   const [goalIds, setGoalIds] = useState(initial?.goalIds || []);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const viewport = useVisualViewport();
@@ -846,13 +874,36 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
           <ToggleChip active={trackingType === "boolean"} onClick={() => setTrackingType("boolean")}>Ja/Nein</ToggleChip>
           <ToggleChip active={trackingType === "count"} onClick={() => setTrackingType("count")}>Anzahl</ToggleChip>
           <ToggleChip active={trackingType === "time"} onClick={() => setTrackingType("time")}>Zeit</ToggleChip>
-          <ToggleChip active={trackingType === "value"} onClick={() => setTrackingType("value")}>Messwert</ToggleChip>
+          <ToggleChip active={trackingType === "clock"} onClick={() => setTrackingType("clock")}>Uhrzeit</ToggleChip>
         </div>
 
         {(trackingType === "count" || trackingType === "time") && (
           <div style={{ marginBottom: 14 }}>
-            <label style={labelStyle}>Tagesziel {trackingType === "time" ? "(Minuten)" : "(Anzahl)"}</label>
+            <label style={labelStyle}>Tagesziel {trackingType === "time" ? "(Minuten)" : ""}</label>
             <input type="number" min={1} style={inputStyle} value={target} onChange={(e) => setTarget(Number(e.target.value))} />
+          </div>
+        )}
+
+        {trackingType === "count" && (
+          <div style={{ marginBottom: 14 }}>
+            <label style={labelStyle}>Einheit (optional)</label>
+            <input style={inputStyle} value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="z. B. Gläser, Seiten, km" />
+          </div>
+        )}
+
+        {trackingType === "clock" && (
+          <div style={{ marginBottom: 14 }}>
+            <label style={labelStyle}>Vorgabe-Uhrzeit</label>
+            <input
+              type="time" style={inputStyle}
+              value={minutesToClock(target)}
+              onChange={(e) => { const m = clockToMinutes(e.target.value); if (m !== null) setTarget(m); }}
+            />
+            <label style={labelStyle}>Erfüllt, wenn die eingetragene Uhrzeit …</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <ToggleChip active={timeDirection === "before"} onClick={() => setTimeDirection("before")}>… kleiner ist</ToggleChip>
+              <ToggleChip active={timeDirection === "after"} onClick={() => setTimeDirection("after")}>… größer ist</ToggleChip>
+            </div>
           </div>
         )}
 
@@ -861,7 +912,7 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
             <label style={labelStyle}>Einheit</label>
             <input style={inputStyle} value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="z. B. kg, cm, bpm" />
             <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: -8, marginBottom: 14 }}>
-              Jede eingetragene Zahl zählt als erfüllt – ideal für Messwerte wie Gewicht, die du einfach nur festhalten willst.
+              Jede eingetragene Zahl zählt als erfüllt (alte Tracking-Art "Messwert" - nicht mehr neu wählbar, bleibt bei bestehenden Habits aber erhalten). Nutze für neue Habits stattdessen "Anzahl" mit Einheit.
             </div>
           </div>
         )}
@@ -909,8 +960,12 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
               onClick={() => onSave({
                 id: initial?.id || `habit_${Date.now()}`,
                 name: name.trim(), description: description.trim(), color, icon, category: category.trim(),
-                difficulty, trackingType, target: (trackingType === "count" || trackingType === "time") ? (Number(target) || 1) : 1,
-                unit: trackingType === "time" ? "Minuten" : trackingType === "count" ? "Anzahl" : unit,
+                difficulty, trackingType,
+                target: trackingType === "clock"
+                  ? (Number.isFinite(Number(target)) ? Number(target) : 0)
+                  : (trackingType === "count" || trackingType === "time") ? (Number(target) || 1) : 1,
+                unit: trackingType === "time" ? "Minuten" : unit.trim(),
+                timeDirection,
                 goalIds,
                 createdAt: initial?.createdAt || todayKey(),
                 startDate: initial?.startDate || todayKey(),
@@ -1558,6 +1613,17 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
               <TrendingDown size={11} style={{ color: COLORS.coral }} /> {stats.currentNegStreak}
             </span>
           )}
+          {stats.longestStreak > 0 && (
+            <span
+              title="Beste Streak jemals"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11.5, fontWeight: 600,
+                color: COLORS.textFaint, fontFamily: "JetBrains Mono, monospace",
+              }}
+            >
+              <Award size={11} style={{ color: COLORS.ember2 }} /> {stats.longestStreak}
+            </span>
+          )}
         </div>
         <div style={{ display: "flex", gap: 3, marginTop: 7 }}>
           {last14.map((k) => {
@@ -1639,7 +1705,9 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
   // Werteverlauf: alle numerischen Einträge dieses Habits chronologisch,
   // für die Auswertung "wie entwickeln sich die Zahlen" (z. B. Gewicht)
   const valueSeries = useMemo(() => {
-    if (habit.trackingType === "boolean") return [];
+    // "clock" speichert Minuten seit Mitternacht - als Zahlenverlauf-Chart
+    // ohne Uhrzeit-Formatierung wenig aussagekräftig, daher hier ausgeklammert.
+    if (habit.trackingType === "boolean" || habit.trackingType === "clock") return [];
     return Object.keys(entries)
       .filter((dateKey) => typeof entries[dateKey]?.[habit.id] === "number")
       .sort()
@@ -1865,6 +1933,32 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
               }}><TrendingDown size={14} /> Nicht erfüllt</button>
               <button onClick={() => onToggle(habit.id, selectedDay, undefined)} style={{ ...ghostBtn, flex: 1 }}>Zurücksetzen</button>
             </div>
+          ) : habit.trackingType === "clock" ? (
+            <>
+              <div style={{ fontSize: 11, color: COLORS.textFaint, marginBottom: 8 }}>
+                Erfüllt, wenn die Uhrzeit {habit.timeDirection === "after" ? "größer" : "kleiner"} ist als {minutesToClock(habit.target)} Uhr
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  type="time" style={{ ...inputStyle, marginBottom: 0 }}
+                  value={dayInput !== "" ? minutesToClock(Number(dayInput)) : ""}
+                  onChange={(e) => { const m = clockToMinutes(e.target.value); setDayInput(m === null ? "" : String(m)); }}
+                />
+                <button onClick={confirmValue} disabled={dayInput === ""} style={{ ...primaryBtn, opacity: dayInput === "" ? 0.5 : 1, cursor: dayInput === "" ? "not-allowed" : "pointer" }}>
+                  Übernehmen
+                </button>
+                <button onClick={() => { onToggle(habit.id, selectedDay, false); setDayInput(""); }} style={{
+                  ...ghostBtn, display: "flex", alignItems: "center", gap: 6,
+                  color: selectedVal === false ? COLORS.coral : COLORS.textMuted,
+                  border: `1px solid ${selectedVal === false ? COLORS.coral : COLORS.border}`,
+                }}><TrendingDown size={14} /> Nicht erfüllt</button>
+              </div>
+              {typeof selectedVal === "number" && (
+                <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginTop: 8 }}>
+                  Eingetragen: {minutesToClock(selectedVal)} Uhr
+                </div>
+              )}
+            </>
           ) : (
             <>
               <div style={{ fontSize: 11, color: COLORS.textFaint, marginBottom: 8 }}>
@@ -1896,7 +1990,7 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
           )}
         </div>
 
-        {habit.trackingType !== "boolean" && (
+        {habit.trackingType !== "boolean" && habit.trackingType !== "clock" && (
           <div style={{ marginTop: 20 }}>
             <SectionLabel>Verlauf</SectionLabel>
             {!valueStats ? (
