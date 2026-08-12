@@ -89,7 +89,7 @@ import {
   Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users
 } from "lucide-react";
 import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  LineChart, Line, BarChart, Bar, Cell, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer
 } from "recharts";
 import ReactDOM from "react-dom/client";
@@ -623,6 +623,8 @@ function useLifeOSData() {
   const [persons, setPersons] = useState([]);
   const [categories, setCategories] = useState([]);
   const [personGroups, setPersonGroups] = useState([]);
+  const [moods, setMoods] = useState({});
+  const [consumables, setConsumables] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -630,7 +632,7 @@ function useLifeOSData() {
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const [h, e, a, c, j, w, g, t, p, cat, pg] = await Promise.allSettled([
+      const [h, e, a, c, j, w, g, t, p, cat, pg, moodData, consumableData] = await Promise.allSettled([
         window.storage.get("los-habits"),
         window.storage.get("los-entries"),
         window.storage.get("los-achievements"),
@@ -642,6 +644,8 @@ function useLifeOSData() {
         window.storage.get("los-persons"),
         window.storage.get("los-categories"),
         window.storage.get("los-person-groups"),
+        window.storage.get("los-moods"),
+        window.storage.get("los-consumables"),
       ]);
       setHabits(h.status === "fulfilled" && h.value ? JSON.parse(h.value.value) : []);
       setEntries(e.status === "fulfilled" && e.value ? JSON.parse(e.value.value) : {});
@@ -654,6 +658,8 @@ function useLifeOSData() {
       setPersons(p.status === "fulfilled" && p.value ? JSON.parse(p.value.value) : []);
       setCategories(cat.status === "fulfilled" && cat.value ? JSON.parse(cat.value.value) : []);
       setPersonGroups(pg.status === "fulfilled" && pg.value ? JSON.parse(pg.value.value) : []);
+      setMoods(moodData.status === "fulfilled" && moodData.value ? JSON.parse(moodData.value.value) : {});
+      setConsumables(consumableData.status === "fulfilled" && consumableData.value ? JSON.parse(consumableData.value.value) : []);
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -714,10 +720,18 @@ function useLifeOSData() {
     setPersonGroups(next);
     try { await window.storage.set("los-person-groups", JSON.stringify(next)); } catch {}
   }, []);
+  const persistMoods = useCallback(async (next) => {
+    setMoods(next);
+    try { await window.storage.set("los-moods", JSON.stringify(next)); } catch {}
+  }, []);
+  const persistConsumables = useCallback(async (next) => {
+    setConsumables(next);
+    try { await window.storage.set("los-consumables", JSON.stringify(next)); } catch {}
+  }, []);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables,
     refresh,
   };
 }
@@ -1405,9 +1419,12 @@ function TaskModal({ initial, onClose, onSave, onDelete, categories, onAddCatego
 function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, persons, onAddRelationship, onRemoveRelationship }) {
   const [name, setName] = useState(initial?.name || "");
   const [info, setInfo] = useState(initial?.info || "");
-  const [category, setCategory] = useState(initial?.category || "");
+  // `category` war früher eine Einzelgruppe. Beim Bearbeiten wird sie automatisch
+  // in die neue Mehrfachzuordnung übernommen.
+  const [personGroupIds, setPersonGroupIds] = useState(initial?.groups || (initial?.category ? [initial.category] : []));
   const [birthday, setBirthday] = useState(initial?.birthday || "");
   const [color, setColor] = useState(initial?.color || HABIT_COLORS[0]);
+  const [meetingTrackingEnabled, setMeetingTrackingEnabled] = useState(initial?.meetingTrackingEnabled !== false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [newRelType, setNewRelType] = useState(RELATIONSHIP_TYPES[0].key);
   const [newRelTarget, setNewRelTarget] = useState("");
@@ -1436,9 +1453,16 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
         <label style={labelStyle}>Name</label>
         <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="z. B. Anna Müller" autoFocus />
 
-        <label style={labelStyle}>Gruppe (optional)</label>
-        <div style={{ marginBottom: 14 }}>
-          <CategoryPicker value={category} categories={groups || []} onChange={setCategory} onAddCategory={onAddGroup} />
+        <label style={labelStyle}>Gruppen (mehrere möglich)</label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 14 }}>
+          {(groups || []).length === 0 ? <span style={{ fontSize: 12, color: COLORS.textFaint }}>Lege Gruppen unter Einstellungen an.</span> : (groups || []).map((group) => {
+            const selected = personGroupIds.includes(group);
+            return <button key={group} type="button" onClick={() => setPersonGroupIds((current) => selected ? current.filter((item) => item !== group) : [...current, group])} style={{
+              padding: "7px 10px", borderRadius: 8, cursor: "pointer", fontSize: 12,
+              border: `1px solid ${selected ? categoryColor(group) : COLORS.border}`,
+              color: selected ? COLORS.text : COLORS.textMuted, background: selected ? categoryColor(group) + "1f" : "transparent",
+            }}>{selected ? "✓ " : ""}{group}</button>;
+          })}
         </div>
 
         <label style={labelStyle}>Geburtstag (optional)</label>
@@ -1451,6 +1475,17 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
           onChange={(e) => setInfo(e.target.value)}
           placeholder="Wie ihr euch kennt, was euch wichtig ist, Vorlieben …"
         />
+
+        <label style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "11px 12px", marginBottom: 14,
+          borderRadius: 10, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, cursor: "pointer",
+        }}>
+          <input type="checkbox" checked={meetingTrackingEnabled} onChange={(e) => setMeetingTrackingEnabled(e.target.checked)} style={{ width: 17, height: 17, margin: 0 }} />
+          <span>
+            <strong style={{ display: "block", fontSize: 12.5 }}>Treffen für diese Person zählen</strong>
+            <span style={{ display: "block", fontSize: 11, color: COLORS.textFaint, marginTop: 2 }}>Deaktivieren, wenn diese Person nicht in Treffen-Statistiken erscheinen soll.</span>
+          </span>
+        </label>
 
         <label style={labelStyle}>Farbe</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
@@ -1528,7 +1563,7 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
               disabled={!canSave}
               onClick={() => onSave({
                 id: initial?.id || `person_${Date.now()}`,
-                name: name.trim(), info: info.trim(), category: category.trim(), birthday: birthday || null, color,
+                name: name.trim(), info: info.trim(), groups: personGroupIds, category: personGroupIds[0] || "", birthday: birthday || null, color, meetingTrackingEnabled,
                 meetings: initial?.meetings || [],
                 relationships,
                 createdAt: initial?.createdAt || todayKey(),
@@ -2072,7 +2107,7 @@ function motivationLine(active, entries, allStats) {
 
 function Dashboard({
   habits, entries, onToggle, onOpenDetail, onEdit, onCreate, celebrateId, coach, onOpenCoach, hasCoach,
-  goals, tasks, persons, persistTasks, onOpenTasks,
+  goals, tasks, persons, persistTasks, onOpenTasks, moods, persistMoods, onOpenMood,
 }) {
   const active = habits;
   const allStats = useMemo(() => active.map((h) => simulateHabit(h, entries, todayKey())), [active, entries]);
@@ -2114,6 +2149,11 @@ function Dashboard({
           Guten Tag. <span style={{ color: COLORS.ember2 }}>{totalToday > 0 ? `+${totalToday}` : totalToday} Punkte heute</span>
         </h1>
         <p style={{ color: COLORS.textMuted, fontSize: 14.5, marginTop: 6 }}>{motivationLine(active, entries, allStats)}</p>
+      </div>
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 16, marginBottom: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><SectionLabel>Wie geht es dir heute?</SectionLabel><button onClick={onOpenMood} style={{ ...ghostBtn, padding: "5px 9px", fontSize: 10.5 }}>Zum Verlauf</button></div>
+        <MoodInput dateKey={todayKey()} moods={moods} persistMoods={persistMoods} compact />
       </div>
 
       {hasCoach && coach?.quote && (
@@ -2440,16 +2480,27 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     };
     const allTrackedKeys = [
       ...Object.keys(dailyStatusMap),
-      ...(persons || []).flatMap((person) => person.meetings || []),
+      ...(persons || []).filter((person) => person.meetingTrackingEnabled !== false).flatMap((person) => person.meetings || []),
       ...(tasks || []).map((task) => task.completedAt).filter(Boolean),
       ...(goals || []).map((goal) => goal.achievedAt).filter(Boolean),
     ].filter(isValidProgressDate).sort();
-    const startKey = rangeDays === "all"
-      ? (allTrackedKeys[0] || todayKey())
-      : toKey(addDays(today, -(rangeDays - 1)));
-    const calendarDays = rangeDays === "all"
-      ? Math.max(1, Math.round((keyToDate(todayKey()) - keyToDate(startKey)) / 86400000) + 1)
-      : rangeDays;
+    // "thisWeek"/"lastWeek" sind Kalenderwochen (Mo-So) und enden - anders als
+    // die Tage-Presets - nicht zwangsläufig heute: "letzte Woche" endet am
+    // vergangenen Sonntag, nicht heute. Daher eigener endKey statt todayKey().
+    const isWeekPreset = rangeDays === "thisWeek" || rangeDays === "lastWeek";
+    const thisMonday = startOfWeek(today);
+    const weekStart = rangeDays === "lastWeek" ? addDays(thisMonday, -7) : thisMonday;
+    const startKey = isWeekPreset
+      ? toKey(weekStart)
+      : rangeDays === "all"
+        ? (allTrackedKeys[0] || todayKey())
+        : toKey(addDays(today, -(rangeDays - 1)));
+    const endKey = rangeDays === "lastWeek" ? toKey(addDays(weekStart, 6)) : todayKey();
+    const calendarDays = isWeekPreset
+      ? 7
+      : rangeDays === "all"
+        ? Math.max(1, Math.round((keyToDate(todayKey()) - keyToDate(startKey)) / 86400000) + 1)
+        : rangeDays;
     const previousStartKey = rangeDays === "all" ? null : toKey(addDays(keyToDate(startKey), -calendarDays));
     const previousEndKey = rangeDays === "all" ? null : toKey(addDays(keyToDate(startKey), -1));
 
@@ -2468,12 +2519,12 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
       return { success, fail, tracked, activeDays, points, rate: tracked ? Math.round(success / tracked * 100) : null };
     };
 
-    const current = summarize(startKey, todayKey());
+    const current = summarize(startKey, endKey);
     const previous = previousStartKey ? summarize(previousStartKey, previousEndKey) : null;
-    const rateDelta = current.rate !== null && previous?.rate !== null ? current.rate - previous.rate : null;
+    const rateDelta = current.rate !== null && previous && previous.rate !== null ? current.rate - previous.rate : null;
 
     const habitRows = active.map((habit, index) => {
-      const currentDays = allStats[index].daily.filter((d) => d.date >= startKey && d.date <= todayKey() && d.status !== "empty");
+      const currentDays = allStats[index].daily.filter((d) => d.date >= startKey && d.date <= endKey && d.status !== "empty");
       const previousDays = previousStartKey
         ? allStats[index].daily.filter((d) => d.date >= previousStartKey && d.date <= previousEndKey && d.status !== "empty")
         : [];
@@ -2491,7 +2542,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     habitRows.forEach((row) => {
       const category = categoryOf(row.habit);
       if (!categoryMap[category]) categoryMap[category] = { category, success: 0, tracked: 0 };
-      const days = allStats[active.indexOf(row.habit)].daily.filter((d) => d.date >= startKey && d.date <= todayKey() && d.status !== "empty");
+      const days = allStats[active.indexOf(row.habit)].daily.filter((d) => d.date >= startKey && d.date <= endKey && d.status !== "empty");
       categoryMap[category].success += days.filter((d) => d.status === "success").length;
       categoryMap[category].tracked += days.length;
     });
@@ -2499,28 +2550,29 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
       .map((item) => ({ ...item, rate: item.tracked ? Math.round(item.success / item.tracked * 100) : 0 }))
       .sort((a, b) => b.rate - a.rate);
 
-    const completedTasks = (tasks || []).filter((task) => task.completedAt >= startKey && task.completedAt <= todayKey()).length;
-    const achievedGoals = (goals || []).filter((goal) => goal.achievedAt >= startKey && goal.achievedAt <= todayKey()).length;
-    const meetings = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= startKey && date <= todayKey()).length, 0);
-    return { startKey, calendarDays, current, previous, rateDelta, habitRows, categories, completedTasks, achievedGoals, meetings };
+    const completedTasks = (tasks || []).filter((task) => task.completedAt >= startKey && task.completedAt <= endKey).length;
+    const achievedGoals = (goals || []).filter((goal) => goal.achievedAt >= startKey && goal.achievedAt <= endKey).length;
+    const meetings = (persons || []).filter((person) => person.meetingTrackingEnabled !== false).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= startKey && date <= endKey).length, 0);
+    return { startKey, endKey, calendarDays, current, previous, rateDelta, habitRows, categories, completedTasks, achievedGoals, meetings };
   }, [rangeDays, dailyStatusMap, dailyPointsMap, active, allStats, tasks, goals, persons]);
 
   const meetingAnalysis = useMemo(() => {
     const startKey = periodAnalysis.startKey;
-    const endKey = todayKey();
-    const useWeeks = rangeDays !== "all" && rangeDays <= 90;
+    const endKey = periodAnalysis.endKey;
+    const useWeeks = rangeDays === "thisWeek" || rangeDays === "lastWeek" || (typeof rangeDays === "number" && rangeDays <= 90);
     const startDate = keyToDate(startKey);
     const totalMonths = (new Date().getFullYear() - startDate.getFullYear()) * 12 + new Date().getMonth() - startDate.getMonth() + 1;
     // Bei sehr langen Gesamtzeiträumen verhindert eine Jahresaggregation
     // hunderte oder tausende Diagrammbalken, ohne Treffen wegzulassen.
     const useYears = rangeDays === "all" && totalMonths > 120;
-    const rows = (persons || []).map((person) => {
+    const meetingPersons = (persons || []).filter((person) => person.meetingTrackingEnabled !== false);
+    const rows = meetingPersons.map((person) => {
       const dates = (person.meetings || []).filter((date) => date >= startKey && date <= endKey);
       return { person, count: dates.length, lastDate: dates.slice().sort().at(-1) || null };
     }).filter((row) => row.count > 0).sort((a, b) => b.count - a.count || a.person.name.localeCompare(b.person.name, "de"));
 
     const previousCount = periodAnalysis.previous
-      ? (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= toKey(addDays(keyToDate(startKey), -periodAnalysis.calendarDays)) && date < startKey).length, 0)
+      ? meetingPersons.reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= toKey(addDays(keyToDate(startKey), -periodAnalysis.calendarDays)) && date < startKey).length, 0)
       : null;
     const currentCount = rows.reduce((sum, row) => sum + row.count, 0);
 
@@ -2530,7 +2582,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
       while (cursor <= keyToDate(endKey)) {
         const bucketStart = toKey(cursor);
         const bucketEnd = toKey(addDays(cursor, 6));
-        const count = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= bucketStart && date <= bucketEnd && date >= startKey && date <= endKey).length, 0);
+        const count = meetingPersons.reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= bucketStart && date <= bucketEnd && date >= startKey && date <= endKey).length, 0);
         buckets.push({ key: bucketStart, label: `KW ${isoWeekNumber(cursor)}`, fullLabel: `${shortDate(bucketStart)} – ${shortDate(bucketEnd)}`, treffen: count });
         cursor = addDays(cursor, 7);
       }
@@ -2538,14 +2590,14 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
       let cursor = startOfMonth(keyToDate(startKey));
       while (cursor <= keyToDate(endKey)) {
         const prefix = toKey(cursor).slice(0, 7);
-        const count = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
+        const count = meetingPersons.reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
         buckets.push({ key: prefix, label: cursor.toLocaleDateString("de-DE", { month: "short", year: "2-digit" }), fullLabel: cursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" }), treffen: count });
         cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
       }
     } else {
       for (let year = startDate.getFullYear(); year <= new Date().getFullYear(); year++) {
         const prefix = String(year);
-        const count = (persons || []).reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
+        const count = meetingPersons.reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
         buckets.push({ key: prefix, label: prefix, fullLabel: prefix, treffen: count });
       }
     }
@@ -2553,26 +2605,28 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
   }, [persons, periodAnalysis.startKey, periodAnalysis.calendarDays, periodAnalysis.previous, rangeDays]);
 
   const weeklySuccessRate = useMemo(() => {
-    const thisWeekStart = startOfWeek(new Date());
+    // An periodAnalysis.endKey verankert statt an "heute", damit bei "letzte
+    // Woche" der letzte Balken auch wirklich die letzte Woche zeigt.
+    const lastVisibleWeekStart = startOfWeek(keyToDate(periodAnalysis.endKey));
     return Array.from({ length: 12 }, (_, i) => {
-      const wStart = addDays(thisWeekStart, -7 * (11 - i));
+      const wStart = addDays(lastVisibleWeekStart, -7 * (11 - i));
       const wEnd = addDays(wStart, 6);
       if (toKey(wEnd) < periodAnalysis.startKey) return null;
       let success = 0, fail = 0;
       for (let d = 0; d < 7; d++) {
         const key = toKey(addDays(wStart, d));
-        if (key < periodAnalysis.startKey || key > todayKey()) continue;
+        if (key < periodAnalysis.startKey || key > periodAnalysis.endKey) continue;
         const s = dailyStatusMap[key];
         if (s) { success += s.success; fail += s.fail; }
       }
       const tracked = success + fail;
       return { week: `KW ${isoWeekNumber(wStart)}`, rate: tracked > 0 ? Math.round((success / tracked) * 100) : null, tracked };
     }).filter(Boolean);
-  }, [dailyStatusMap, periodAnalysis.startKey]);
+  }, [dailyStatusMap, periodAnalysis.startKey, periodAnalysis.endKey]);
 
   const filteredDailyStatusMap = useMemo(() => Object.fromEntries(
-    Object.entries(dailyStatusMap).filter(([key]) => key >= periodAnalysis.startKey && key <= todayKey())
-  ), [dailyStatusMap, periodAnalysis.startKey]);
+    Object.entries(dailyStatusMap).filter(([key]) => key >= periodAnalysis.startKey && key <= periodAnalysis.endKey)
+  ), [dailyStatusMap, periodAnalysis.startKey, periodAnalysis.endKey]);
   const yearWeeklyHeatmap = useMemo(() => buildYearWeeklyHeatmap(viewYear, filteredDailyStatusMap), [viewYear, filteredDailyStatusMap]);
 
   const monthlyCategoryStats = useMemo(() => {
@@ -2580,46 +2634,46 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
       const prefix = `${viewYear}-${pad(m + 1)}`;
       const map = {};
       active.forEach((h, i) => {
-        const pts = allStats[i].daily.filter((d) => d.date.startsWith(prefix) && d.date >= periodAnalysis.startKey && d.date <= todayKey()).reduce((s, d) => s + d.delta, 0);
+        const pts = allStats[i].daily.filter((d) => d.date.startsWith(prefix) && d.date >= periodAnalysis.startKey && d.date <= periodAnalysis.endKey).reduce((s, d) => s + d.delta, 0);
         if (pts !== 0) {
           const cat = categoryOf(h);
           map[cat] = (map[cat] || 0) + pts;
         }
       });
       (tasks || []).forEach((t) => {
-        if (t.completed && t.completedAt && t.completedAt.startsWith(prefix) && t.completedAt >= periodAnalysis.startKey && t.completedAt <= todayKey()) {
+        if (t.completed && t.completedAt && t.completedAt.startsWith(prefix) && t.completedAt >= periodAnalysis.startKey && t.completedAt <= periodAnalysis.endKey) {
           const cat = categoryOf(t);
           map[cat] = (map[cat] || 0) + t.points;
         }
       });
       (goals || []).forEach((g) => {
-        if (g.achieved && g.achievedAt && g.achievedAt.startsWith(prefix) && g.achievedAt >= periodAnalysis.startKey && g.achievedAt <= todayKey()) {
+        if (g.achieved && g.achievedAt && g.achievedAt.startsWith(prefix) && g.achievedAt >= periodAnalysis.startKey && g.achievedAt <= periodAnalysis.endKey) {
           const cat = categoryOf(g);
           map[cat] = (map[cat] || 0) + g.points;
         }
       });
       return Object.entries(map).map(([category, points]) => ({ category, points })).sort((a, b) => b.points - a.points);
     });
-  }, [active, allStats, tasks, goals, viewYear, periodAnalysis.startKey]);
+  }, [active, allStats, tasks, goals, viewYear, periodAnalysis.startKey, periodAnalysis.endKey]);
   const [hoveredMonth, setHoveredMonth] = useState(null);
 
-  const achievedGoals = (goals || []).filter((g) => g.achieved && g.achievedAt >= periodAnalysis.startKey && g.achievedAt <= todayKey()).sort((a, b) => (b.achievedAt || "").localeCompare(a.achievedAt || ""));
+  const achievedGoals = (goals || []).filter((g) => g.achieved && g.achievedAt >= periodAnalysis.startKey && g.achievedAt <= periodAnalysis.endKey).sort((a, b) => (b.achievedAt || "").localeCompare(a.achievedAt || ""));
   const openGoalsCount = (goals || []).filter((g) => !g.achieved).length;
   const goalPointsSum = achievedGoals.reduce((s, g) => s + g.points, 0);
   const filteredYearData = useMemo(() => {
     const months = yearData.months.map((month) => {
       const prefix = `${viewYear}-${pad(month.month + 1)}`;
-      const points = Object.entries(dailyPointsMap).filter(([key]) => key.startsWith(prefix) && key >= periodAnalysis.startKey && key <= todayKey()).reduce((sum, [, value]) => sum + value, 0);
+      const points = Object.entries(dailyPointsMap).filter(([key]) => key.startsWith(prefix) && key >= periodAnalysis.startKey && key <= periodAnalysis.endKey).reduce((sum, [, value]) => sum + value, 0);
       return { ...month, points };
     });
     return { months, yearTotal: months.reduce((sum, month) => sum + month.points, 0) };
-  }, [yearData, viewYear, dailyPointsMap, periodAnalysis.startKey]);
+  }, [yearData, viewYear, dailyPointsMap, periodAnalysis.startKey, periodAnalysis.endKey]);
   const filteredMaxAbsMonthPoints = Math.max(1, ...filteredYearData.months.map((month) => Math.abs(month.points)));
-  const periodAchievements = achievements.filter((achievement) => achievement.date >= periodAnalysis.startKey && achievement.date <= todayKey());
+  const periodAchievements = achievements.filter((achievement) => achievement.date >= periodAnalysis.startKey && achievement.date <= periodAnalysis.endKey);
   const periodPointsSeries = useMemo(() => {
     let running = 0;
     const series = Object.keys(dailyPointsMap).sort()
-      .filter((key) => key >= periodAnalysis.startKey && key <= todayKey())
+      .filter((key) => key >= periodAnalysis.startKey && key <= periodAnalysis.endKey)
       .map((key) => {
         running += dailyPointsMap[key];
         return { key, date: shortDate(key), points: dailyPointsMap[key], total: running };
@@ -2630,7 +2684,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     const last = series[series.length - 1];
     if (reduced[reduced.length - 1]?.key !== last.key) reduced.push(last);
     return reduced;
-  }, [dailyPointsMap, periodAnalysis.startKey]);
+  }, [dailyPointsMap, periodAnalysis.startKey, periodAnalysis.endKey]);
 
   return (
     <div>
@@ -2640,7 +2694,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
           <div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Was wird besser, wo stagnierst du und welche Lebensbereiche brauchen Aufmerksamkeit?</div>
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {[{ value: 30, label: "30 Tage" }, { value: 90, label: "90 Tage" }, { value: 365, label: "1 Jahr" }, { value: "all", label: "Gesamt" }].map((option) => (
+          {[{ value: "thisWeek", label: "Diese Woche" }, { value: "lastWeek", label: "Letzte Woche" }, { value: 30, label: "30 Tage" }, { value: 90, label: "90 Tage" }, { value: 365, label: "1 Jahr" }, { value: "all", label: "Gesamt" }].map((option) => (
             <button key={option.value} onClick={() => setRangeDays(option.value)} style={{
               ...ghostBtn, padding: "7px 10px", fontSize: 11.5,
               color: rangeDays === option.value ? COLORS.ember2 : COLORS.textMuted,
@@ -2757,14 +2811,24 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
         <SectionLabel>Punkteentwicklung im gewählten Zeitraum</SectionLabel>
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={periodPointsSeries}>
+        <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
+          Balken = Punkte des jeweiligen Tages, Linie = Punktesumme im gewählten Zeitraum.
+        </p>
+        <ResponsiveContainer width="100%" height={240}>
+          <ComposedChart data={periodPointsSeries}>
             <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} minTickGap={30} />
             <YAxis tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} labelStyle={{ color: COLORS.text }} />
-            <Line type="monotone" dataKey="total" stroke={COLORS.ember2} strokeWidth={2.5} dot={false} />
-          </LineChart>
+            <Tooltip
+              contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }}
+              labelStyle={{ color: COLORS.text }}
+              formatter={(value, name) => [`${value >= 0 ? "+" : ""}${value}`, name === "points" ? "Tagespunkte" : "Summe"]}
+            />
+            <Bar dataKey="points" radius={[4, 4, 0, 0]} maxBarSize={28}>
+              {periodPointsSeries.map((d) => <Cell key={d.key} fill={d.points >= 0 ? COLORS.ember2 : COLORS.coral} />)}
+            </Bar>
+            <Line type="monotone" dataKey="total" stroke={COLORS.violet} strokeWidth={2.5} dot={false} />
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
 
@@ -4256,6 +4320,114 @@ function TaskRow({ task, onToggle, onEdit }) {
 }
 
 /* ============================================================
+   @section CONSUMABLES-PAGE — Bestände, Beschaffungsaufgaben und Haltbarkeit
+   ============================================================ */
+function consumableAverageDays(item) {
+  const history = (item.history || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+  const durations = [];
+  let availableSince = item.createdAt || null;
+  history.forEach((event) => {
+    if (event.available) availableSince = event.date;
+    else if (availableSince) { durations.push(Math.max(0, Math.round((keyToDate(event.date) - keyToDate(availableSince)) / 86400000))); availableSince = null; }
+  });
+  return durations.length ? Math.round(durations.reduce((sum, days) => sum + days, 0) / durations.length) : null;
+}
+function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks }) {
+  const [newArea, setNewArea] = useState("");
+  const [productNames, setProductNames] = useState({});
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const addArea = () => {
+    const name = newArea.trim(); if (!name) return;
+    persistConsumables([...consumables, { id: `area_${Date.now()}`, name, items: [], createdAt: todayKey() }]); setNewArea("");
+  };
+  const addProduct = (areaId) => {
+    const name = (productNames[areaId] || "").trim(); if (!name) return;
+    persistConsumables(consumables.map((area) => area.id === areaId ? { ...area, items: [...(area.items || []), { id: `consumable_${Date.now()}`, name, available: true, createdAt: todayKey(), history: [{ date: todayKey(), available: true }] }] } : area));
+    setProductNames({ ...productNames, [areaId]: "" });
+  };
+  const toggleProduct = (area, item) => {
+    const available = !item.available;
+    persistConsumables(consumables.map((candidate) => candidate.id === area.id ? { ...candidate, items: (candidate.items || []).map((product) => product.id === item.id ? { ...product, available, history: [...(product.history || []), { date: todayKey(), available }] } : product) } : candidate));
+    if (!available) {
+      const hasOpenTask = tasks.some((task) => task.sourceConsumableId === item.id && !task.completed);
+      if (!hasOpenTask) persistTasks([...tasks, { id: `task_consumable_${item.id}_${Date.now()}`, title: `${item.name} neu beschaffen`, content: `Bestand im Bereich „${area.name}“ auffüllen.`, category: "Einkauf", points: 1, dueDate: null, completed: false, completedAt: null, createdAt: todayKey(), sourceConsumableId: item.id }]);
+    } else {
+      persistTasks(tasks.map((task) => task.sourceConsumableId === item.id && !task.completed ? { ...task, completed: true, completedAt: todayKey() } : task));
+    }
+  };
+  const deleteProduct = (areaId, itemId) => { persistConsumables(consumables.map((area) => area.id === areaId ? { ...area, items: (area.items || []).filter((item) => item.id !== itemId) } : area)); setConfirmDelete(null); };
+  const deleteArea = (areaId) => { persistConsumables(consumables.filter((area) => area.id !== areaId)); setConfirmDelete(null); };
+  return <div>
+    <div style={{ marginBottom: 20 }}><h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Verbrauchsartikel</h1><div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Bestände nach Bereichen verwalten und rechtzeitig nachkaufen.</div></div>
+    <div style={{ display: "flex", gap: 8, marginBottom: 20 }}><input value={newArea} onChange={(e) => setNewArea(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addArea()} placeholder="Neuer Bereich, z. B. Sporttasche" style={{ ...inputStyle, marginBottom: 0 }} /><button onClick={addArea} style={primaryBtn}><Plus size={14} /> Bereich</button></div>
+    {consumables.length === 0 ? <div style={{ textAlign: "center", padding: "42px 20px", border: `1px dashed ${COLORS.border}`, borderRadius: 16, color: COLORS.textMuted }}>Lege deinen ersten Bereich und anschließend die enthaltenen Produkte an.</div> : <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {consumables.map((area) => <div key={area.id} style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}><Droplet size={16} style={{ color: COLORS.violet }} /><strong style={{ flex: 1 }}>{area.name}</strong>{confirmDelete === area.id ? <button onClick={() => deleteArea(area.id)} style={{ ...ghostBtn, padding: "5px 8px", color: COLORS.coral, borderColor: COLORS.coral }}>Wirklich löschen?</button> : <IconButton onClick={() => setConfirmDelete(area.id)} title="Bereich löschen" danger><Trash2 size={13} /></IconButton>}</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}><input value={productNames[area.id] || ""} onChange={(e) => setProductNames({ ...productNames, [area.id]: e.target.value })} onKeyDown={(e) => e.key === "Enter" && addProduct(area.id)} placeholder="Produkt hinzufügen" style={{ ...inputStyle, marginBottom: 0 }} /><button onClick={() => addProduct(area.id)} style={{ ...ghostBtn, flexShrink: 0 }}><Plus size={13} /></button></div>
+        {(area.items || []).length === 0 ? <div style={{ fontSize: 12, color: COLORS.textFaint }}>Noch keine Produkte.</div> : <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>{area.items.map((item) => {
+          const avg = consumableAverageDays(item); return <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 11px", background: COLORS.bgSoft, borderRadius: 10 }}>
+            <button onClick={() => toggleProduct(area, item)} style={{ width: 30, height: 30, borderRadius: "50%", border: `1px solid ${item.available ? COLORS.mint : COLORS.coral}`, background: item.available ? COLORS.mint + "22" : COLORS.coral + "22", color: item.available ? COLORS.mint : COLORS.coral, cursor: "pointer" }}>{item.available ? <Check size={15} /> : <X size={15} />}</button>
+            <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 13.5, fontWeight: 600 }}>{item.name}</div><div style={{ fontSize: 11, color: COLORS.textFaint }}>{item.available ? "Vorhanden" : "Nicht vorhanden · Beschaffungs-Task erstellt"} · Ø Haltbarkeit: {avg === null ? "noch nicht berechenbar" : `${avg} Tage`}</div></div>
+            {confirmDelete === item.id ? <button onClick={() => deleteProduct(area.id, item.id)} style={{ ...ghostBtn, padding: "5px 8px", color: COLORS.coral }}>Löschen?</button> : <IconButton onClick={() => setConfirmDelete(item.id)} title="Produkt löschen" danger><Trash2 size={13} /></IconButton>}
+          </div>;
+        })}</div>}
+      </div>)}
+    </div>}
+  </div>;
+}
+
+/* ============================================================
+   @section MOOD-PAGE — tägliches Fitness- und Stimmungsgefühl
+   ============================================================ */
+const MOOD_SCALE = [
+  { value: 1, label: "Sehr niedrig", emoji: "😞" }, { value: 2, label: "Niedrig", emoji: "😕" },
+  { value: 3, label: "Mittel", emoji: "😐" }, { value: 4, label: "Gut", emoji: "🙂" }, { value: 5, label: "Sehr gut", emoji: "😄" },
+];
+function overallMood(entry) {
+  return entry?.fitness && entry?.mood ? Math.round(((entry.fitness + entry.mood) / 2) * 10) / 10 : null;
+}
+function MoodInput({ dateKey, moods, persistMoods, compact = false }) {
+  const entry = moods[dateKey] || {};
+  const saveValue = (field, value) => persistMoods({ ...moods, [dateKey]: { ...entry, [field]: value } });
+  const total = overallMood(entry);
+  const scale = (field, title, color) => <div style={{ flex: "1 1 260px" }}>
+    <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>{title}</div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+      {MOOD_SCALE.map((item) => <button key={item.value} title={item.label} onClick={() => saveValue(field, item.value)} style={{
+        padding: compact ? "7px 2px" : "9px 3px", borderRadius: 9, cursor: "pointer", fontSize: compact ? 17 : 20,
+        border: `1px solid ${entry[field] === item.value ? color : COLORS.border}`,
+        background: entry[field] === item.value ? color + "22" : COLORS.bgSoft,
+      }}>{item.emoji}<span style={{ display: "block", fontSize: 9.5, color: COLORS.textFaint, marginTop: 3 }}>{item.value}</span></button>)}
+    </div>
+  </div>;
+  return <div>
+    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+      {scale("fitness", "A. Wie fit fühlst du dich?", COLORS.mint)}
+      {scale("mood", "B. Wie ist deine Stimmung?", COLORS.violet)}
+    </div>
+    <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: COLORS.bgSoft, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <span style={{ fontSize: 12, color: COLORS.textMuted }}>Gesamtstimmung</span>
+      <strong style={{ fontFamily: "Fraunces, serif", fontSize: 20, color: total === null ? COLORS.textFaint : total >= 4 ? COLORS.mint : total < 2.5 ? COLORS.coral : COLORS.ember2 }}>{total === null ? "–" : `${total} / 5`}</strong>
+    </div>
+  </div>;
+}
+function MoodPage({ moods, persistMoods }) {
+  const [selectedDate, setSelectedDate] = useState(todayKey());
+  const series = useMemo(() => Object.keys(moods).sort().slice(-60).map((date) => ({ date: shortDate(date), fitness: moods[date].fitness || null, mood: moods[date].mood || null, overall: overallMood(moods[date]) })), [moods]);
+  return <div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+      <div><h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Stimmung</h1><div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Körperliches Gefühl und Stimmung getrennt erfassen.</div></div>
+      <input type="date" max={todayKey()} value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} style={{ ...inputStyle, width: "auto", marginBottom: 0 }} />
+    </div>
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}><SectionLabel>{selectedDate === todayKey() ? "Heute" : longDate(selectedDate)}</SectionLabel><MoodInput dateKey={selectedDate} moods={moods} persistMoods={persistMoods} /></div>
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18 }}>
+      <SectionLabel>Stimmungsverlauf</SectionLabel>
+      {series.length === 0 ? <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Stimmung eingetragen.</div> : <ResponsiveContainer width="100%" height={240}><LineChart data={series}><CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} /><XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} minTickGap={24} /><YAxis domain={[1, 5]} ticks={[1,2,3,4,5]} tick={{ fill: COLORS.textFaint, fontSize: 10 }} /><Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8 }} /><Line type="monotone" dataKey="fitness" name="Fitness" stroke={COLORS.mint} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="mood" name="Stimmung" stroke={COLORS.violet} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="overall" name="Gesamt" stroke={COLORS.ember2} strokeWidth={3} connectNulls /></LineChart></ResponsiveContainer>}
+    </div>
+  </div>;
+}
+
+/* ============================================================
    @section PERSONS-PAGE — Personenverwaltung: Klick zählt ein Treffen, pro Person eine Auswertung
    PERSONEN
    Ein Klick auf eine Person zählt ein Treffen (Datum wird gespeichert).
@@ -4317,9 +4489,11 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   const [modalPerson, setModalPerson] = useState(undefined);
   const [celebrateId, setCelebrateId] = useState(null);
   const [showNetwork, setShowNetwork] = useState(false);
+  const [networkGroup, setNetworkGroup] = useState(null);
 
-  const totalMeetings = persons.reduce((s, p) => s + (p.meetings || []).length, 0);
-  const metTodayCount = persons.filter((p) => (p.meetings || []).includes(todayKey())).length;
+  const trackedPersons = persons.filter((p) => p.meetingTrackingEnabled !== false);
+  const totalMeetings = trackedPersons.reduce((s, p) => s + (p.meetings || []).length, 0);
+  const metTodayCount = trackedPersons.filter((p) => (p.meetings || []).includes(todayKey())).length;
   const relationshipCount = persons.reduce((s, p) => s + (p.relationships || []).length, 0) / 2;
 
   const handleSave = (person) => {
@@ -4340,8 +4514,9 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     setModalPerson(undefined);
   };
 
-  const logMeeting = (person) => {
-    const next = persons.map((p) => (p.id === person.id ? { ...p, meetings: [...(p.meetings || []), todayKey()] } : p));
+  const logMeeting = (person, date = todayKey()) => {
+    if (person.meetingTrackingEnabled === false || !date || date > todayKey()) return;
+    const next = persons.map((p) => (p.id === person.id ? { ...p, meetings: [...(p.meetings || []), date] } : p));
     persistPersons(next);
     setCelebrateId(person.id);
     setTimeout(() => setCelebrateId(null), 1200);
@@ -4386,7 +4561,22 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   };
 
   const sorted = [...persons].sort((a, b) => a.name.localeCompare(b.name, "de"));
-  const grouped = groupHabitsByCategory(sorted);
+  const grouped = useMemo(() => {
+    const map = {};
+    sorted.forEach((person) => {
+      const assignedGroups = person.groups || (person.category ? [person.category] : []);
+      const effectiveGroups = assignedGroups.length ? assignedGroups : [UNCATEGORIZED];
+      effectiveGroups.forEach((group) => { if (!map[group]) map[group] = []; map[group].push(person); });
+    });
+    return Object.keys(map).sort((a, b) => a === UNCATEGORIZED ? 1 : b === UNCATEGORIZED ? -1 : a.localeCompare(b, "de")).map((category) => ({ category, habits: map[category] }));
+  }, [persons]);
+  const networkPersons = useMemo(() => {
+    if (!networkGroup) return persons;
+    const members = persons.filter((person) => (person.groups || (person.category ? [person.category] : [])).includes(networkGroup));
+    const visibleIds = new Set(members.map((person) => person.id));
+    members.forEach((person) => (person.relationships || []).forEach((relationship) => visibleIds.add(relationship.personId)));
+    return persons.filter((person) => visibleIds.has(person.id));
+  }, [persons, networkGroup]);
 
   return (
     <div>
@@ -4394,7 +4584,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
         <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Personen</h1>
         <div style={{ display: "flex", gap: 10 }}>
           {persons.length > 1 && (
-            <button onClick={() => setShowNetwork(true)} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 6 }}>
+            <button onClick={() => { setNetworkGroup(null); setShowNetwork(true); }} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 6 }}>
               <Users size={15} /> Verbindungen
             </button>
           )}
@@ -4427,6 +4617,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
               <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
                 <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryColor(category) }} />
                 <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>{category}</span>
+                {category !== UNCATEGORIZED && groupPersons.length > 1 && <button onClick={() => { setNetworkGroup(category); setShowNetwork(true); }} style={{ ...ghostBtn, marginLeft: "auto", padding: "5px 8px", fontSize: 10.5, display: "flex", alignItems: "center", gap: 5 }}><Users size={11} /> Gruppen-Verbindungen</button>}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {groupPersons.map((p) => (
@@ -4434,7 +4625,8 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
                     key={p.id}
                     person={p}
                     celebrating={celebrateId === p.id}
-                    onLogMeeting={() => logMeeting(p)}
+                    persons={persons}
+                    onLogMeeting={(date) => logMeeting(p, date)}
                     onDeleteMeeting={(meetingIndex) => deleteMeeting(p.id, meetingIndex)}
                     onEdit={() => { setModalPerson(p); setShowModal(true); }}
                   />
@@ -4450,7 +4642,8 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
           initial={modalPerson}
           groups={personGroups}
           onAddGroup={onAddPersonGroup}
-          persons={persons}
+          persons={networkPersons}
+          title={networkGroup ? `Verbindungen · ${networkGroup}` : "Verbindungen"}
           onAddRelationship={addRelationship}
           onRemoveRelationship={removeRelationship}
           onClose={() => { setShowModal(false); setModalPerson(undefined); }}
@@ -4470,7 +4663,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   );
 }
 
-function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onEdit }) {
+function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting, onEdit }) {
   const stats = personStats(person);
   const initial = (person.name || "?").trim().charAt(0).toUpperCase();
   const [showHistory, setShowHistory] = useState(false);
@@ -4478,11 +4671,11 @@ function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onEdit 
   return (
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, overflow: "hidden" }}>
       <div
-        onClick={onLogMeeting}
-        title="Klicken, um ein Treffen zu zählen"
+        onClick={() => person.meetingTrackingEnabled !== false && onLogMeeting(todayKey())}
+        title={person.meetingTrackingEnabled === false ? "Treffen-Zählung deaktiviert" : "Klicken, um ein Treffen für heute zu zählen"}
         style={{
           display: "flex", alignItems: "center", gap: 14, padding: "14px 16px",
-          position: "relative", overflow: "hidden", cursor: "pointer",
+          position: "relative", overflow: "hidden", cursor: person.meetingTrackingEnabled === false ? "default" : "pointer",
         }}
       >
       {celebrating && <Confetti trigger={person.id + "_" + Date.now()} />}
@@ -4504,37 +4697,47 @@ function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onEdit 
               🎂 {shortDate(person.birthday)}
             </span>
           )}
+          {person.meetingTrackingEnabled === false && (
+            <span style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 6, color: COLORS.textFaint, background: COLORS.bgSoft }}>ohne Treffen-Zählung</span>
+          )}
         </div>
-        <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 2 }}>
+        {person.meetingTrackingEnabled !== false && <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 2 }}>
           {stats.lastMet ? `Zuletzt getroffen: ${shortDate(stats.lastMet)}` : "Noch nicht getroffen"}
-        </div>
+        </div>}
         {person.info && (
           <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4, lineHeight: 1.4, whiteSpace: "pre-wrap" }}>{person.info}</div>
         )}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", marginTop: 6, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: COLORS.textFaint }}>
+        {person.meetingTrackingEnabled !== false && <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", marginTop: 6, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: COLORS.textFaint }}>
           <span>{stats.total} Treffen gesamt</span>
           <span>{stats.thisWeek} diese Woche</span>
           <span>{stats.thisMonth} diesen Monat</span>
-        </div>
+        </div>}
+        {(person.relationships || []).length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
+          {(person.relationships || []).map((relationship) => {
+            const target = (persons || []).find((candidate) => candidate.id === relationship.personId);
+            return target ? <span key={relationship.personId} style={{ fontSize: 10.5, color: COLORS.textMuted, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 7, padding: "3px 6px" }}>{relationshipLabel(relationship.type)} {target.name}</span> : null;
+          })}
+        </div>}
       </div>
 
       <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-        <button onClick={() => setShowHistory((value) => !value)} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5 }}>
+        {person.meetingTrackingEnabled !== false && <button onClick={() => setShowHistory((value) => !value)} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5 }}>
           {showHistory ? "Weniger" : "Verlauf"}
-        </button>
+        </button>}
         <IconButton onClick={onEdit} title="Bearbeiten"><Pencil size={14} /></IconButton>
       </div>
       </div>
 
       {showHistory && (
-        <MeetingHistory person={person} onDeleteMeeting={onDeleteMeeting} />
+        <MeetingHistory person={person} onAddMeeting={onLogMeeting} onDeleteMeeting={onDeleteMeeting} />
       )}
     </div>
   );
 }
 
-function MeetingHistory({ person, onDeleteMeeting }) {
+function MeetingHistory({ person, onAddMeeting, onDeleteMeeting }) {
   const [confirmIndex, setConfirmIndex] = useState(null);
+  const [meetingDate, setMeetingDate] = useState(todayKey());
   const meetings = (person.meetings || [])
     .map((date, index) => ({ date, index }))
     .sort((a, b) => b.date.localeCompare(a.date) || b.index - a.index);
@@ -4559,6 +4762,10 @@ function MeetingHistory({ person, onDeleteMeeting }) {
     <div style={{ borderTop: `1px solid ${COLORS.borderSoft}`, padding: "16px", cursor: "default" }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>
         Treffen im Zeitverlauf
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        <input type="date" max={todayKey()} value={meetingDate} onChange={(e) => setMeetingDate(e.target.value)} style={{ ...inputStyle, width: "auto", flex: "1 1 170px", marginBottom: 0 }} />
+        <button disabled={!meetingDate || meetingDate > todayKey()} onClick={() => onAddMeeting(meetingDate)} style={{ ...primaryBtn, opacity: !meetingDate || meetingDate > todayKey() ? 0.5 : 1 }}>Treffen eintragen</button>
       </div>
       {meetings.length === 0 ? (
         <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Treffen eingetragen.</div>
@@ -4613,23 +4820,8 @@ function MeetingHistory({ person, onDeleteMeeting }) {
    Verbindungen als beschriftete Linien dazwischen. Klick auf eine Person öffnet
    direkt deren Bearbeiten-Modal.
    ============================================================ */
-function PersonNetworkView({ persons, onClose, onEditPerson }) {
+function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPerson }) {
   const viewport = useVisualViewport();
-  const isMobile = useIsMobile();
-  const size = isMobile ? 340 : 560;
-  const center = size / 2;
-  const radius = Math.max(70, center - 70);
-
-  const nodePositions = useMemo(() => {
-    const map = {};
-    const count = Math.max(1, persons.length);
-    persons.forEach((p, i) => {
-      const angle = (i / count) * Math.PI * 2 - Math.PI / 2;
-      map[p.id] = { x: center + radius * Math.cos(angle), y: center + radius * Math.sin(angle) };
-    });
-    return map;
-  }, [persons, radius, center]);
-
   // Jede Verbindung existiert bei beiden Personen (Gegenrichtung) - hier pro
   // Paar nur einmal zeichnen, um doppelte Linien zu vermeiden.
   const edges = useMemo(() => {
@@ -4648,14 +4840,32 @@ function PersonNetworkView({ persons, onClose, onEditPerson }) {
     return list;
   }, [persons]);
 
+  const components = useMemo(() => {
+    const adjacency = Object.fromEntries(persons.map((person) => [person.id, []]));
+    edges.forEach((edge) => { adjacency[edge.from.id].push(edge.to.id); adjacency[edge.to.id].push(edge.from.id); });
+    const visited = new Set();
+    return persons.map((person) => {
+      if (visited.has(person.id)) return null;
+      const queue = [person.id], group = [];
+      visited.add(person.id);
+      while (queue.length) {
+        const id = queue.shift();
+        const member = persons.find((candidate) => candidate.id === id);
+        if (member) group.push(member);
+        (adjacency[id] || []).forEach((next) => { if (!visited.has(next)) { visited.add(next); queue.push(next); } });
+      }
+      return group;
+    }).filter(Boolean).sort((a, b) => b.length - a.length);
+  }, [persons, edges]);
+
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
-      <div style={{ ...modalStyle, maxWidth: size + 80 }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ ...modalStyle, maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
         <div style={modalBodyStyle}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div>
-              <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>Verbindungen</h2>
-              <p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Tippe auf eine Person, um sie zu bearbeiten.</p>
+              <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2>
+              <p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Beziehungsstränge sind getrennt und kreuzungsfrei dargestellt.</p>
             </div>
             <IconButton onClick={onClose}><X size={16} /></IconButton>
           </div>
@@ -4666,33 +4876,25 @@ function PersonNetworkView({ persons, onClose, onEditPerson }) {
             </div>
           )}
 
-          <div style={{ overflowX: "auto" }}>
-            <svg width={size} height={size} style={{ display: "block", margin: "0 auto" }}>
-              {edges.map((e, i) => {
-                const pa = nodePositions[e.from.id], pb = nodePositions[e.to.id];
-                const mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
-                return (
-                  <g key={i}>
-                    <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke={COLORS.borderSoft} strokeWidth={1.5} />
-                    <rect x={mx - 44} y={my - 8} width={88} height={15} rx={4} fill={COLORS.surface} />
-                    <text x={mx} y={my + 3} textAnchor="middle" fontSize={9} fill={COLORS.textMuted} fontFamily="Inter, sans-serif">{e.label}</text>
-                  </g>
-                );
-              })}
-              {persons.map((p) => {
-                const pos = nodePositions[p.id];
-                const initial = (p.name || "?").trim().charAt(0).toUpperCase();
-                return (
-                  <g key={p.id} onClick={() => onEditPerson(p)} style={{ cursor: "pointer" }}>
-                    <circle cx={pos.x} cy={pos.y} r={20} fill={p.color + "33"} stroke={p.color} strokeWidth={2} />
-                    <text x={pos.x} y={pos.y + 5} textAnchor="middle" fontSize={13} fontWeight={700} fill={p.color} fontFamily="Inter, sans-serif">{initial}</text>
-                    <text x={pos.x} y={pos.y + 34} textAnchor="middle" fontSize={10.5} fill={COLORS.text} fontFamily="Inter, sans-serif">
-                      {p.name.length > 12 ? p.name.slice(0, 11) + "…" : p.name}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {components.map((component, index) => {
+              const ids = new Set(component.map((person) => person.id));
+              const links = edges.filter((edge) => ids.has(edge.from.id) && ids.has(edge.to.id));
+              return <div key={component.map((person) => person.id).join("|")} style={{ padding: 14, borderRadius: 12, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}` }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>Strang {index + 1} · {component.length} {component.length === 1 ? "Person" : "Personen"}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: links.length ? 12 : 0 }}>
+                  {component.map((person) => <button key={person.id} onClick={() => onEditPerson(person)} style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 10px", borderRadius: 9, border: `1px solid ${person.color}55`, background: person.color + "14", color: COLORS.text, cursor: "pointer" }}>
+                    <span style={{ width: 20, height: 20, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", background: person.color + "33", color: person.color, fontSize: 10.5, fontWeight: 700 }}>{(person.name || "?").trim().charAt(0).toUpperCase()}</span>
+                    <span style={{ fontSize: 12.5, fontWeight: 600 }}>{person.name}</span>
+                  </button>)}
+                </div>
+                {links.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6 }}>
+                  {links.map((edge) => <div key={[edge.from.id, edge.to.id].sort().join("|")} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, padding: "7px 9px", borderRadius: 8, background: COLORS.surface, fontSize: 11.5 }}>
+                    <strong style={{ color: edge.from.color }}>{edge.from.name}</strong><span style={{ color: COLORS.textFaint }}>· {edge.label} ·</span><strong style={{ color: edge.to.color }}>{edge.to.name}</strong>
+                  </div>)}
+                </div>}
+              </div>;
+            })}
           </div>
         </div>
       </div>
@@ -4730,8 +4932,8 @@ function downloadJSON(filename, obj) {
 }
 
 function SettingsPage({
-  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups,
-  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups,
+  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables,
+  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables,
   onAnthropicKeyChange,
 }) {
   const fileInputRef = useRef(null);
@@ -4742,7 +4944,7 @@ function SettingsPage({
   const handleExport = () => {
     const payload = {
       app: "life-os", version: 1, exportedAt: new Date().toISOString(),
-      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons },
+      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, moods, consumables },
     };
     downloadJSON(`life-os-backup-${todayKey()}.json`, payload);
   };
@@ -4781,6 +4983,8 @@ function SettingsPage({
     await persistGoals(Array.isArray(pendingImport.goals) ? pendingImport.goals : []);
     await persistTasks(Array.isArray(pendingImport.tasks) ? pendingImport.tasks : []);
     await persistPersons(Array.isArray(pendingImport.persons) ? pendingImport.persons : []);
+    await persistMoods(pendingImport.moods && typeof pendingImport.moods === "object" ? pendingImport.moods : {});
+    await persistConsumables(Array.isArray(pendingImport.consumables) ? pendingImport.consumables : []);
     setPendingImport(null);
     setImportSuccess(true);
     setTimeout(() => setImportSuccess(false), 4000);
@@ -5100,11 +5304,19 @@ function PersonGroupManager({ groups, persistGroups, persons, persistPersons }) 
     setRenaming(null);
     if (!trimmed || trimmed === renaming) return;
     persistGroups(groups.map((g) => (g === renaming ? trimmed : g)));
-    persistPersons(persons.map((p) => (p.category === renaming ? { ...p, category: trimmed } : p)));
+    persistPersons(persons.map((p) => {
+      const assigned = p.groups || (p.category ? [p.category] : []);
+      const nextGroups = assigned.map((group) => group === renaming ? trimmed : group);
+      return { ...p, groups: [...new Set(nextGroups)], category: nextGroups[0] || "" };
+    }));
   };
 
   const deleteGroup = (g) => {
     persistGroups(groups.filter((x) => x !== g));
+    persistPersons(persons.map((p) => {
+      const nextGroups = (p.groups || (p.category ? [p.category] : [])).filter((group) => group !== g);
+      return { ...p, groups: nextGroups, category: nextGroups[0] || "" };
+    }));
     setConfirmDelete(null);
   };
 
@@ -5244,6 +5456,8 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
   const items = [
     { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
     { key: "progress", label: "Fortschritt", Icon: TrendingUp },
+    { key: "mood", label: "Stimmung", Icon: Heart },
+    { key: "consumables", label: "Verbrauch", Icon: Droplet },
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
@@ -5301,6 +5515,8 @@ function BottomNav({ page, setPage, hasCoach }) {
   const items = [
     { key: "dashboard", label: "Home", Icon: LayoutDashboard },
     { key: "progress", label: "Verlauf", Icon: TrendingUp },
+    { key: "mood", label: "Stimmung", Icon: Heart },
+    { key: "consumables", label: "Verbrauch", Icon: Droplet },
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
@@ -5379,8 +5595,8 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
    ============================================================ */
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables,
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
@@ -5555,6 +5771,9 @@ export default function LifeOS() {
               persons={persons}
               persistTasks={persistTasks}
               onOpenTasks={() => setPage("tasks")}
+              moods={moods}
+              persistMoods={persistMoods}
+              onOpenMood={() => setPage("mood")}
             />
           )}
           {page === "habits" && (
@@ -5567,6 +5786,8 @@ export default function LifeOS() {
             />
           )}
           {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} persons={persons} />}
+          {page === "mood" && <MoodPage moods={moods} persistMoods={persistMoods} />}
+          {page === "consumables" && <ConsumablesPage consumables={consumables} persistConsumables={persistConsumables} tasks={tasks} persistTasks={persistTasks} />}
           {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
           {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} />}
@@ -5575,10 +5796,10 @@ export default function LifeOS() {
           {page === "settings" && (
             <SettingsPage
               habits={habits} entries={entries} achievements={achievements} coach={coach}
-              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups}
+              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables}
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
               persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
-              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups}
+              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables}
               onAnthropicKeyChange={refreshCoachKey}
             />
           )}
