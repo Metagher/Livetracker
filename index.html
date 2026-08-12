@@ -4845,80 +4845,59 @@ function MeetingHistory({ person, onAddMeeting, onDeleteMeeting }) {
    ============================================================ */
 function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPerson }) {
   const viewport = useVisualViewport();
-  // Jede Verbindung existiert bei beiden Personen (Gegenrichtung) - hier pro
-  // Paar nur einmal zeichnen, um doppelte Linien zu vermeiden.
-  const edges = useMemo(() => {
-    const seen = new Set();
-    const list = [];
-    persons.forEach((p) => {
-      (p.relationships || []).forEach((r) => {
-        const key = [p.id, r.personId].sort().join("|");
-        if (seen.has(key)) return;
-        const other = persons.find((x) => x.id === r.personId);
-        if (!other) return;
-        seen.add(key);
-        list.push({ from: p, to: other, label: relationshipLabel(r.type) });
-      });
-    });
-    return list;
-  }, [persons]);
+  const [focusId, setFocusId] = useState(() => persons.find((person) => (person.relationships || []).length > 0)?.id || persons[0]?.id || "");
+  useEffect(() => { if (!persons.some((person) => person.id === focusId)) setFocusId(persons[0]?.id || ""); }, [persons, focusId]);
+  const tree = useMemo(() => {
+    const focus = persons.find((person) => person.id === focusId);
+    const findPerson = (id) => persons.find((person) => person.id === id);
+    const related = (person, types) => (person?.relationships || []).filter((relationship) => types.includes(relationship.type)).map((relationship) => findPerson(relationship.personId)).filter(Boolean);
+    if (!focus) return null;
+    // Der gespeicherte Typ beschreibt die Rolle der Fokusperson gegenüber dem
+    // Ziel: `child` bedeutet also, dass das Ziel ein Elternteil der Fokusperson ist.
+    const parents = related(focus, ["child"]);
+    const children = related(focus, ["parent"]);
+    const grandparents = [...new Map(parents.flatMap((parent) => related(parent, ["child"])).map((person) => [person.id, person])).values()];
+    const grandchildren = [...new Map(children.flatMap((child) => related(child, ["parent"])).map((person) => [person.id, person])).values()];
+    return { focus, grandparents, parents, partners: related(focus, ["partner"]), siblings: related(focus, ["sibling"]), children, grandchildren };
+  }, [persons, focusId]);
 
-  const components = useMemo(() => {
-    const adjacency = Object.fromEntries(persons.map((person) => [person.id, []]));
-    edges.forEach((edge) => { adjacency[edge.from.id].push(edge.to.id); adjacency[edge.to.id].push(edge.from.id); });
-    const visited = new Set();
-    return persons.map((person) => {
-      if (visited.has(person.id)) return null;
-      const queue = [person.id], group = [];
-      visited.add(person.id);
-      while (queue.length) {
-        const id = queue.shift();
-        const member = persons.find((candidate) => candidate.id === id);
-        if (member) group.push(member);
-        (adjacency[id] || []).forEach((next) => { if (!visited.has(next)) { visited.add(next); queue.push(next); } });
-      }
-      return group;
-    }).filter(Boolean).sort((a, b) => b.length - a.length);
-  }, [persons, edges]);
+  const PersonNode = ({ person, central = false }) => <button onClick={() => setFocusId(person.id)} onDoubleClick={() => onEditPerson(person)} title="Antippen: fokussieren · Doppeltippen: bearbeiten" style={{
+    minWidth: central ? 150 : 120, maxWidth: 180, padding: central ? "12px 14px" : "9px 11px", borderRadius: 12,
+    border: `2px solid ${central ? person.color : person.color + "88"}`, background: central ? person.color + "25" : COLORS.surface,
+    color: COLORS.text, cursor: "pointer", boxShadow: central ? `0 0 0 3px ${person.color}18` : "none",
+  }}><span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}><span style={{ width: 24, height: 24, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", background: person.color + "33", color: person.color, fontWeight: 700, fontSize: 11 }}>{(person.name || "?").trim().charAt(0).toUpperCase()}</span><strong style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{person.name}</strong></span></button>;
+  const Generation = ({ label, people }) => people.length > 0 && <div style={{ textAlign: "center" }}><div style={{ fontSize: 9.5, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 7 }}>{label}</div><div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 8 }}>{people.map((person) => <PersonNode key={person.id} person={person} />)}</div></div>;
+  const connector = <div style={{ width: 2, height: 22, background: COLORS.border, margin: "5px auto", borderRadius: 2 }} />;
 
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
-      <div style={{ ...modalStyle, maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ ...modalStyle, maxWidth: 760 }} onClick={(e) => e.stopPropagation()}>
         <div style={modalBodyStyle}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div>
               <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2>
-              <p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Beziehungsstränge sind getrennt und kreuzungsfrei dargestellt.</p>
+              <p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Es wird nur die Familie der ausgewählten Fokusperson angezeigt.</p>
             </div>
             <IconButton onClick={onClose}><X size={16} /></IconButton>
           </div>
 
-          {edges.length === 0 && (
-            <div style={{ fontSize: 12.5, color: COLORS.textFaint, textAlign: "center", padding: "12px 0 20px" }}>
-              Noch keine Verbindungen eingetragen - trage sie beim Bearbeiten einer Person ein.
+          <div style={{ marginBottom: 16 }}><label style={labelStyle}>Fokusperson</label><select value={focusId} onChange={(e) => setFocusId(e.target.value)} style={{ ...inputStyle, marginBottom: 0, cursor: "pointer" }}>{persons.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></div>
+          {!tree ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>Keine Person verfügbar.</div> : <div style={{ overflowX: "auto", padding: "6px 0 12px" }}><div style={{ minWidth: 330, display: "flex", flexDirection: "column", alignItems: "stretch" }}>
+            <Generation label="Großeltern" people={tree.grandparents} />
+            {tree.grandparents.length > 0 && connector}
+            <Generation label="Eltern" people={tree.parents} />
+            {tree.parents.length > 0 && connector}
+            <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", flexWrap: "wrap", gap: 18 }}>
+              {tree.siblings.length > 0 && <Generation label="Geschwister" people={tree.siblings} />}
+              <div style={{ textAlign: "center" }}><div style={{ fontSize: 9.5, fontWeight: 700, color: COLORS.ember2, textTransform: "uppercase", marginBottom: 7 }}>Fokus</div><PersonNode person={tree.focus} central /></div>
+              {tree.partners.length > 0 && <Generation label="Partner/in" people={tree.partners} />}
             </div>
-          )}
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {components.map((component, index) => {
-              const ids = new Set(component.map((person) => person.id));
-              const links = edges.filter((edge) => ids.has(edge.from.id) && ids.has(edge.to.id));
-              return <div key={component.map((person) => person.id).join("|")} style={{ padding: 14, borderRadius: 12, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}` }}>
-                <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>Strang {index + 1} · {component.length} {component.length === 1 ? "Person" : "Personen"}</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: links.length ? 12 : 0 }}>
-                  {component.map((person) => <button key={person.id} onClick={() => onEditPerson(person)} style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 10px", borderRadius: 9, border: `1px solid ${person.color}55`, background: person.color + "14", color: COLORS.text, cursor: "pointer" }}>
-                    <span style={{ width: 20, height: 20, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", background: person.color + "33", color: person.color, fontSize: 10.5, fontWeight: 700 }}>{(person.name || "?").trim().charAt(0).toUpperCase()}</span>
-                    <span style={{ fontSize: 12.5, fontWeight: 600 }}>{person.name}</span>
-                  </button>)}
-                </div>
-                {links.length > 0 && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 6 }}>
-                  {links.map((edge) => <div key={[edge.from.id, edge.to.id].sort().join("|")} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, padding: "7px 9px", borderRadius: 8, background: COLORS.surface, fontSize: 11.5 }}>
-                    <strong style={{ color: edge.from.color }}>{edge.from.name}</strong><span style={{ color: COLORS.textFaint }}>· {edge.label} ·</span><strong style={{ color: edge.to.color }}>{edge.to.name}</strong>
-                  </div>)}
-                </div>}
-              </div>;
-            })}
-          </div>
+            {tree.children.length > 0 && connector}
+            <Generation label="Kinder" people={tree.children} />
+            {tree.grandchildren.length > 0 && connector}
+            <Generation label="Enkel" people={tree.grandchildren} />
+            {tree.grandparents.length + tree.parents.length + tree.partners.length + tree.siblings.length + tree.children.length + tree.grandchildren.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.textFaint, textAlign: "center", marginTop: 16 }}>Für diese Person sind noch keine familiären Verbindungen eingetragen.</div>}
+          </div></div>}
         </div>
       </div>
     </div>
