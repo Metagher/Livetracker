@@ -380,6 +380,11 @@ const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDat
 const todayKey = () => toKey(new Date());
 const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
 const keyToDate = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
+const isValidDateKey = (key) => {
+  if (typeof key !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return false;
+  const date = keyToDate(key);
+  return !Number.isNaN(date.getTime()) && toKey(date) === key;
+};
 const dayLabel = (k) => keyToDate(k).toLocaleDateString("de-DE", { weekday: "short" });
 const shortDate = (k) => keyToDate(k).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
 const longDate = (k) => keyToDate(k).toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -628,6 +633,10 @@ function useLifeOSData() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  const readStoredJSON = (result, fallback) => {
+    if (result.status !== "fulfilled" || !result.value) return fallback;
+    try { return JSON.parse(result.value.value); } catch { return fallback; }
+  };
 
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
@@ -647,19 +656,19 @@ function useLifeOSData() {
         window.storage.get("los-moods"),
         window.storage.get("los-consumables"),
       ]);
-      setHabits(h.status === "fulfilled" && h.value ? JSON.parse(h.value.value) : []);
-      setEntries(e.status === "fulfilled" && e.value ? JSON.parse(e.value.value) : {});
-      setAchievements(a.status === "fulfilled" && a.value ? JSON.parse(a.value.value) : []);
-      setCoach(c.status === "fulfilled" && c.value ? JSON.parse(c.value.value) : null);
-      setJournal(j.status === "fulfilled" && j.value ? JSON.parse(j.value.value) : {});
-      setWeeklyReports(w.status === "fulfilled" && w.value ? JSON.parse(w.value.value) : {});
-      setGoals(g.status === "fulfilled" && g.value ? JSON.parse(g.value.value) : []);
-      setTasks(t.status === "fulfilled" && t.value ? JSON.parse(t.value.value) : []);
-      setPersons(p.status === "fulfilled" && p.value ? JSON.parse(p.value.value) : []);
-      setCategories(cat.status === "fulfilled" && cat.value ? JSON.parse(cat.value.value) : []);
-      setPersonGroups(pg.status === "fulfilled" && pg.value ? JSON.parse(pg.value.value) : []);
-      setMoods(moodData.status === "fulfilled" && moodData.value ? JSON.parse(moodData.value.value) : {});
-      setConsumables(consumableData.status === "fulfilled" && consumableData.value ? JSON.parse(consumableData.value.value) : []);
+      setHabits(readStoredJSON(h, []));
+      setEntries(readStoredJSON(e, {}));
+      setAchievements(readStoredJSON(a, []));
+      setCoach(readStoredJSON(c, null));
+      setJournal(readStoredJSON(j, {}));
+      setWeeklyReports(readStoredJSON(w, {}));
+      setGoals(readStoredJSON(g, []));
+      setTasks(readStoredJSON(t, []));
+      setPersons(readStoredJSON(p, []));
+      setCategories(readStoredJSON(cat, []));
+      setPersonGroups(readStoredJSON(pg, []));
+      setMoods(readStoredJSON(moodData, {}));
+      setConsumables(readStoredJSON(consumableData, []));
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -4075,7 +4084,7 @@ function GoalRow({ goal, onToggle, onEdit, linkedHabits, weekSeries, weekTotal }
    TASKS
    Einfache Aufgabenverwaltung mit Punktebelohnung bei Erledigung
    ============================================================ */
-function TasksPage({ tasks, persistTasks, categories, onAddCategory }) {
+function TasksPage({ tasks, persistTasks, categories, onAddCategory, consumables, persistConsumables }) {
   const [showModal, setShowModal] = useState(false);
   const [modalTask, setModalTask] = useState(undefined);
 
@@ -4083,10 +4092,14 @@ function TasksPage({ tasks, persistTasks, categories, onAddCategory }) {
   const earnedPoints = tasks.filter((t) => t.completed).reduce((s, t) => s + t.points, 0);
 
   const toggleCompleted = (task) => {
+    const completing = !task.completed;
     const next = tasks.map((t) => t.id === task.id
-      ? { ...t, completed: !t.completed, completedAt: !t.completed ? todayKey() : null }
+      ? { ...t, completed: completing, completedAt: completing ? todayKey() : null }
       : t);
     persistTasks(next);
+    if (task.sourceConsumableId && completing) {
+      persistConsumables(consumables.map((area) => ({ ...area, items: (area.items || []).map((item) => item.id === task.sourceConsumableId && !item.available ? { ...item, available: true, history: [...(item.history || []), { date: todayKey(), available: true }] } : item) })));
+    }
   };
 
   const handleSave = (task) => {
@@ -4323,7 +4336,7 @@ function TaskRow({ task, onToggle, onEdit }) {
    @section CONSUMABLES-PAGE — Bestände, Beschaffungsaufgaben und Haltbarkeit
    ============================================================ */
 function consumableAverageDays(item) {
-  const history = (item.history || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+  const history = (item.history || []).filter((event) => isValidDateKey(event.date)).slice().sort((a, b) => a.date.localeCompare(b.date));
   const durations = [];
   let availableSince = item.createdAt || null;
   history.forEach((event) => {
@@ -4331,6 +4344,9 @@ function consumableAverageDays(item) {
     else if (availableSince) { durations.push(Math.max(0, Math.round((keyToDate(event.date) - keyToDate(availableSince)) / 86400000))); availableSince = null; }
   });
   return durations.length ? Math.round(durations.reduce((sum, days) => sum + days, 0) / durations.length) : null;
+}
+function createConsumablePurchaseTask(area, item) {
+  return { id: `task_consumable_${item.id}_${Date.now()}`, title: `${item.name} neu beschaffen`, content: `Bestand im Bereich „${area.name}“ auffüllen.`, category: "Einkauf", points: 1, dueDate: null, completed: false, completedAt: null, createdAt: todayKey(), sourceConsumableId: item.id };
 }
 function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks }) {
   const [newArea, setNewArea] = useState("");
@@ -4350,13 +4366,20 @@ function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks 
     persistConsumables(consumables.map((candidate) => candidate.id === area.id ? { ...candidate, items: (candidate.items || []).map((product) => product.id === item.id ? { ...product, available, history: [...(product.history || []), { date: todayKey(), available }] } : product) } : candidate));
     if (!available) {
       const hasOpenTask = tasks.some((task) => task.sourceConsumableId === item.id && !task.completed);
-      if (!hasOpenTask) persistTasks([...tasks, { id: `task_consumable_${item.id}_${Date.now()}`, title: `${item.name} neu beschaffen`, content: `Bestand im Bereich „${area.name}“ auffüllen.`, category: "Einkauf", points: 1, dueDate: null, completed: false, completedAt: null, createdAt: todayKey(), sourceConsumableId: item.id }]);
+      if (!hasOpenTask) persistTasks([...tasks, createConsumablePurchaseTask(area, item)]);
     } else {
       persistTasks(tasks.map((task) => task.sourceConsumableId === item.id && !task.completed ? { ...task, completed: true, completedAt: todayKey() } : task));
     }
   };
-  const deleteProduct = (areaId, itemId) => { persistConsumables(consumables.map((area) => area.id === areaId ? { ...area, items: (area.items || []).filter((item) => item.id !== itemId) } : area)); setConfirmDelete(null); };
-  const deleteArea = (areaId) => { persistConsumables(consumables.filter((area) => area.id !== areaId)); setConfirmDelete(null); };
+  const deleteProduct = (areaId, itemId) => {
+    persistConsumables(consumables.map((area) => area.id === areaId ? { ...area, items: (area.items || []).filter((item) => item.id !== itemId) } : area));
+    persistTasks(tasks.filter((task) => task.sourceConsumableId !== itemId)); setConfirmDelete(null);
+  };
+  const deleteArea = (areaId) => {
+    const itemIds = new Set((consumables.find((area) => area.id === areaId)?.items || []).map((item) => item.id));
+    persistConsumables(consumables.filter((area) => area.id !== areaId));
+    persistTasks(tasks.filter((task) => !itemIds.has(task.sourceConsumableId))); setConfirmDelete(null);
+  };
   return <div>
     <div style={{ marginBottom: 20 }}><h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Verbrauchsartikel</h1><div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Bestände nach Bereichen verwalten und rechtzeitig nachkaufen.</div></div>
     <div style={{ display: "flex", gap: 8, marginBottom: 20 }}><input value={newArea} onChange={(e) => setNewArea(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addArea()} placeholder="Neuer Bereich, z. B. Sporttasche" style={{ ...inputStyle, marginBottom: 0 }} /><button onClick={addArea} style={primaryBtn}><Plus size={14} /> Bereich</button></div>
@@ -4944,7 +4967,7 @@ function SettingsPage({
   const handleExport = () => {
     const payload = {
       app: "life-os", version: 1, exportedAt: new Date().toISOString(),
-      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, moods, consumables },
+      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables },
     };
     downloadJSON(`life-os-backup-${todayKey()}.json`, payload);
   };
@@ -4983,6 +5006,8 @@ function SettingsPage({
     await persistGoals(Array.isArray(pendingImport.goals) ? pendingImport.goals : []);
     await persistTasks(Array.isArray(pendingImport.tasks) ? pendingImport.tasks : []);
     await persistPersons(Array.isArray(pendingImport.persons) ? pendingImport.persons : []);
+    await persistCategories(Array.isArray(pendingImport.categories) ? pendingImport.categories : []);
+    await persistPersonGroups(Array.isArray(pendingImport.personGroups) ? pendingImport.personGroups : []);
     await persistMoods(pendingImport.moods && typeof pendingImport.moods === "object" ? pendingImport.moods : {});
     await persistConsumables(Array.isArray(pendingImport.consumables) ? pendingImport.consumables : []);
     setPendingImport(null);
@@ -5210,7 +5235,7 @@ function CategoryManager({ categories, persistCategories, habits, tasks, goals, 
   const confirmRename = () => {
     const trimmed = renameValue.trim();
     setRenaming(null);
-    if (!trimmed || trimmed === renaming) return;
+    if (!trimmed || trimmed === renaming || categories.some((category) => category !== renaming && category === trimmed)) return;
     persistCategories(categories.map((c) => (c === renaming ? trimmed : c)));
     persistHabits(habits.map((h) => (h.category === renaming ? { ...h, category: trimmed } : h)));
     persistTasks(tasks.map((t) => (t.category === renaming ? { ...t, category: trimmed } : t)));
@@ -5219,6 +5244,9 @@ function CategoryManager({ categories, persistCategories, habits, tasks, goals, 
 
   const deleteCategory = (cat) => {
     persistCategories(categories.filter((c) => c !== cat));
+    persistHabits(habits.map((habit) => habit.category === cat ? { ...habit, category: "" } : habit));
+    persistTasks(tasks.map((task) => task.category === cat ? { ...task, category: "" } : task));
+    persistGoals(goals.map((goal) => goal.category === cat ? { ...goal, category: "" } : goal));
     setConfirmDelete(null);
   };
 
@@ -5302,7 +5330,7 @@ function PersonGroupManager({ groups, persistGroups, persons, persistPersons }) 
   const confirmRename = () => {
     const trimmed = renameValue.trim();
     setRenaming(null);
-    if (!trimmed || trimmed === renaming) return;
+    if (!trimmed || trimmed === renaming || groups.some((group) => group !== renaming && group === trimmed)) return;
     persistGroups(groups.map((g) => (g === renaming ? trimmed : g)));
     persistPersons(persons.map((p) => {
       const assigned = p.groups || (p.category ? [p.category] : []);
@@ -5622,6 +5650,15 @@ export default function LifeOS() {
   const allStats = useMemo(() => activeHabits.map((h) => simulateHabit(h, entries, todayKey())), [activeHabits, entries]);
   const totalPoints = allStats.reduce((s, st) => s + st.totalPoints, 0) + totalGoalPoints(goals) + totalTaskPoints(tasks);
 
+  // Globale Bestands-Invariante: jeder fehlende Artikel hat genau eine offene
+  // Beschaffungsaufgabe, unabhängig davon, welche Seite gerade geöffnet ist.
+  useEffect(() => {
+    if (loading) return;
+    const missing = consumables.flatMap((area) => (area.items || []).filter((item) => !item.available).map((item) => ({ area, item })));
+    const needed = missing.filter(({ item }) => !tasks.some((task) => task.sourceConsumableId === item.id && !task.completed));
+    if (needed.length) persistTasks([...tasks, ...needed.map(({ area, item }) => createConsumablePurchaseTask(area, item))]);
+  }, [consumables, tasks, loading, persistTasks]);
+
   // Achievement-Check
   useEffect(() => {
     if (loading) return;
@@ -5791,7 +5828,7 @@ export default function LifeOS() {
           {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
           {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} />}
-          {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
+          {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} consumables={consumables} persistConsumables={persistConsumables} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} />}
           {page === "settings" && (
             <SettingsPage
