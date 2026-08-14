@@ -1497,8 +1497,8 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
           })}
         </div>
 
-        <label style={labelStyle}>Geburtstag (optional)</label>
-        <DatePicker value={birthday} onChange={setBirthday} placeholder="Kein Geburtstag hinterlegt" />
+        <label style={labelStyle}>Geburtsdatum (optional)</label>
+        <input type="date" max={todayKey()} value={birthday} onChange={(e) => setBirthday(e.target.value)} style={inputStyle} />
 
         <label style={labelStyle}>Infos (optional)</label>
         <textarea
@@ -2163,8 +2163,8 @@ function Dashboard({
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate)), [tasks, weekKeys]);
   const upcomingBirthdays = useMemo(() => {
     return (persons || [])
-      .filter((p) => p.birthday)
-      .map((p) => ({ person: p, days: daysUntilBirthday(p.birthday) }))
+      .filter((p) => p.birthday && isValidDateKey(p.birthday) && keyToDate(p.birthday) <= new Date())
+      .map((p) => ({ person: p, days: daysUntilBirthday(p.birthday), nextAge: ageAtNextBirthday(p.birthday) }))
       .filter((x) => x.days <= 14)
       .sort((a, b) => a.days - b.days);
   }, [persons]);
@@ -2219,12 +2219,12 @@ function Dashboard({
           border: `1px solid ${COLORS.ember2}33`, borderRadius: 14, padding: "12px 14px",
         }}>
           <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.ember2, letterSpacing: "0.03em" }}>GEBURTSTAGE</div>
-          {upcomingBirthdays.map(({ person, days }) => (
+          {upcomingBirthdays.map(({ person, days, nextAge }) => (
             <div key={person.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
               <span>🎂</span>
               <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{person.name}</span>
               <span style={{ color: COLORS.textMuted, fontSize: 12, flexShrink: 0 }}>
-                {days === 0 ? "heute!" : days === 1 ? "morgen" : `in ${days} Tagen`}
+                {days === 0 ? `heute · wird ${nextAge}` : days === 1 ? `morgen · wird ${nextAge}` : `in ${days} Tagen · wird ${nextAge}`}
               </span>
             </div>
           ))}
@@ -4747,6 +4747,25 @@ function daysUntilBirthday(birthday, today = new Date()) {
   if (next < todayMid) next = new Date(todayMid.getFullYear() + 1, b.getMonth(), dayInYear(todayMid.getFullYear() + 1));
   return Math.round((next - todayMid) / 86400000);
 }
+function birthdayAge(birthday, today = new Date()) {
+  if (!birthday || !isValidDateKey(birthday)) return null;
+  const born = keyToDate(birthday);
+  const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  if (born > todayMid) return null;
+  const observedDay = born.getMonth() === 1 && born.getDate() === 29 && !isLeapYear(todayMid.getFullYear()) ? 28 : born.getDate();
+  const birthdayThisYear = new Date(todayMid.getFullYear(), born.getMonth(), observedDay);
+  return todayMid.getFullYear() - born.getFullYear() - (todayMid < birthdayThisYear ? 1 : 0);
+}
+function ageAtNextBirthday(birthday, today = new Date()) {
+  if (!birthday || !isValidDateKey(birthday)) return null;
+  const born = keyToDate(birthday);
+  const todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  if (born > todayMid) return null;
+  const dayInYear = (year) => born.getMonth() === 1 && born.getDate() === 29 && !isLeapYear(year) ? 28 : born.getDate();
+  let birthdayYear = todayMid.getFullYear();
+  if (new Date(birthdayYear, born.getMonth(), dayInYear(birthdayYear)) < todayMid) birthdayYear += 1;
+  return birthdayYear - born.getFullYear();
+}
 
 function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }) {
   const [showModal, setShowModal] = useState(false);
@@ -4929,6 +4948,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
 
 function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting, onEdit }) {
   const stats = personStats(person);
+  const age = birthdayAge(person.birthday);
   const initial = (person.name || "?").trim().charAt(0).toUpperCase();
   const [showHistory, setShowHistory] = useState(false);
 
@@ -4958,7 +4978,7 @@ function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting
               display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600,
               padding: "2px 7px", borderRadius: 6, color: COLORS.ember2, background: COLORS.ember2 + "1a",
             }}>
-              🎂 {shortDate(person.birthday)}
+              🎂 {keyToDate(person.birthday).toLocaleDateString("de-DE")}{age !== null ? ` · ${age} Jahre` : ""}
             </span>
           )}
           {person.meetingTrackingEnabled === false && (
