@@ -70,7 +70,8 @@
     "react-dom": "https://esm.sh/react-dom@18.3.1",
     "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
     "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react",
-    "recharts": "https://esm.sh/recharts@2.12.7?external=react,react-dom"
+    "recharts": "https://esm.sh/recharts@2.12.7?external=react,react-dom",
+    "xlsx": "https://esm.sh/xlsx@0.18.5"
   }
 }
 </script>
@@ -86,13 +87,14 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users
+  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, Cell, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer
 } from "recharts";
 import ReactDOM from "react-dom/client";
+import * as XLSX from "xlsx";
 
 /* ============================================================
    @section CONFIG — Supabase/Anthropic-Zugangsdaten (localStorage, pro Gerät)
@@ -630,6 +632,7 @@ function useLifeOSData() {
   const [personGroups, setPersonGroups] = useState([]);
   const [moods, setMoods] = useState({});
   const [consumables, setConsumables] = useState([]);
+  const [shoppingList, setShoppingList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -641,7 +644,7 @@ function useLifeOSData() {
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const [h, e, a, c, j, w, g, t, p, cat, pg, moodData, consumableData] = await Promise.allSettled([
+      const [h, e, a, c, j, w, g, t, p, cat, pg, moodData, consumableData, shoppingData] = await Promise.allSettled([
         window.storage.get("los-habits"),
         window.storage.get("los-entries"),
         window.storage.get("los-achievements"),
@@ -655,6 +658,7 @@ function useLifeOSData() {
         window.storage.get("los-person-groups"),
         window.storage.get("los-moods"),
         window.storage.get("los-consumables"),
+        window.storage.get("los-shopping-list"),
       ]);
       setHabits(readStoredJSON(h, []));
       setEntries(readStoredJSON(e, {}));
@@ -669,6 +673,7 @@ function useLifeOSData() {
       setPersonGroups(readStoredJSON(pg, []));
       setMoods(readStoredJSON(moodData, {}));
       setConsumables(readStoredJSON(consumableData, []));
+      setShoppingList(readStoredJSON(shoppingData, []));
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -737,10 +742,14 @@ function useLifeOSData() {
     setConsumables(next);
     try { await window.storage.set("los-consumables", JSON.stringify(next)); } catch {}
   }, []);
+  const persistShoppingList = useCallback(async (next) => {
+    setShoppingList(next);
+    try { await window.storage.set("los-shopping-list", JSON.stringify(next)); } catch {}
+  }, []);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList,
     refresh,
   };
 }
@@ -4084,7 +4093,7 @@ function GoalRow({ goal, onToggle, onEdit, linkedHabits, weekSeries, weekTotal }
    TASKS
    Einfache Aufgabenverwaltung mit Punktebelohnung bei Erledigung
    ============================================================ */
-function TasksPage({ tasks, persistTasks, categories, onAddCategory, consumables, persistConsumables }) {
+function TasksPage({ tasks, persistTasks, categories, onAddCategory }) {
   const [showModal, setShowModal] = useState(false);
   const [modalTask, setModalTask] = useState(undefined);
 
@@ -4097,9 +4106,6 @@ function TasksPage({ tasks, persistTasks, categories, onAddCategory, consumables
       ? { ...t, completed: completing, completedAt: completing ? todayKey() : null }
       : t);
     persistTasks(next);
-    if (task.sourceConsumableId && completing) {
-      persistConsumables(consumables.map((area) => ({ ...area, items: (area.items || []).map((item) => item.id === task.sourceConsumableId && !item.available ? { ...item, available: true, history: [...(item.history || []), { date: todayKey(), available: true }] } : item) })));
-    }
   };
 
   const handleSave = (task) => {
@@ -4391,10 +4397,51 @@ function ConsumableHistoryModal({ item, onClose, onUpdate, onDelete }) {
     </div>
   );
 }
-function createConsumablePurchaseTask(area, item) {
-  return { id: `task_consumable_${item.id}_${Date.now()}`, title: `${item.name} neu beschaffen`, content: `Bestand im Bereich „${area.name}“ auffüllen.`, category: "Einkauf", points: 1, dueDate: null, completed: false, completedAt: null, createdAt: todayKey(), sourceConsumableId: item.id };
+function createConsumableShoppingItem(area, item, createdAt = todayKey()) {
+  return { id: `shopping_consumable_${item.id}_${Date.now()}`, name: item.name, areaName: area.name, completed: false, completedAt: null, createdAt, sourceConsumableId: item.id };
 }
-function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks }) {
+function ShoppingListPage({ shoppingList, persistShoppingList, consumables, persistConsumables }) {
+  const [name, setName] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editingName, setEditingName] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const addEntry = () => {
+    const trimmed = name.trim(); if (!trimmed) return;
+    persistShoppingList([...shoppingList, { id: `shopping_${Date.now()}`, name: trimmed, areaName: null, completed: false, completedAt: null, createdAt: todayKey(), sourceConsumableId: null }]);
+    setName("");
+  };
+  const toggleEntry = (entry) => {
+    const completed = !entry.completed;
+    persistShoppingList(shoppingList.map((candidate) => candidate.id === entry.id ? { ...candidate, completed, completedAt: completed ? todayKey() : null } : candidate));
+    if (completed && entry.sourceConsumableId) {
+      persistConsumables(consumables.map((area) => ({ ...area, items: (area.items || []).map((item) => item.id === entry.sourceConsumableId && !item.available ? { ...item, available: true, history: [...(item.history || []), { date: todayKey(), available: true }] } : item) })));
+    }
+  };
+  const saveName = (id) => {
+    const trimmed = editingName.trim(); if (!trimmed) return;
+    persistShoppingList(shoppingList.map((entry) => entry.id === id ? { ...entry, name: trimmed } : entry)); setEditingId(null);
+  };
+  const removeEntry = (id) => { persistShoppingList(shoppingList.filter((entry) => entry.id !== id)); setConfirmDelete(null); };
+  const openEntries = shoppingList.filter((entry) => !entry.completed);
+  const completedEntries = shoppingList.filter((entry) => entry.completed).slice().sort((a, b) => (b.completedAt || "").localeCompare(a.completedAt || ""));
+  const renderEntry = (entry) => <div key={entry.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 11px", background: COLORS.bgSoft, borderRadius: 10, opacity: entry.completed ? 0.7 : 1 }}>
+    <button onClick={() => toggleEntry(entry)} title={entry.completed ? "Wieder öffnen" : "Als gekauft markieren"} style={{ width: 30, height: 30, flexShrink: 0, borderRadius: "50%", border: `1px solid ${entry.completed ? COLORS.mint : COLORS.border}`, background: entry.completed ? COLORS.mint + "22" : "transparent", color: entry.completed ? COLORS.mint : COLORS.textFaint, cursor: "pointer" }}>{entry.completed ? <Check size={15} /> : <ShoppingCart size={14} />}</button>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      {editingId === entry.id ? <div style={{ display: "flex", gap: 6 }}><input autoFocus value={editingName} onChange={(e) => setEditingName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveName(entry.id); if (e.key === "Escape") setEditingId(null); }} style={{ ...inputStyle, marginBottom: 0 }} /><button onClick={() => saveName(entry.id)} style={{ ...primaryBtn, padding: "7px 10px" }}>Speichern</button></div> : <><div style={{ fontSize: 13.5, fontWeight: 600, textDecoration: entry.completed ? "line-through" : "none" }}>{entry.name}</div><div style={{ fontSize: 11, color: COLORS.textFaint }}>{entry.areaName ? `Aus Verbrauch · ${entry.areaName}` : "Manuell hinzugefügt"}{entry.completedAt ? ` · gekauft am ${shortDate(entry.completedAt)}` : ""}</div></>}
+    </div>
+    {editingId !== entry.id && <IconButton onClick={() => { setEditingId(entry.id); setEditingName(entry.name); setConfirmDelete(null); }} title="Eintrag bearbeiten"><Pencil size={13} /></IconButton>}
+    {confirmDelete === entry.id ? <button onClick={() => removeEntry(entry.id)} style={{ ...ghostBtn, padding: "6px 8px", fontSize: 11, color: COLORS.coral, borderColor: COLORS.coral }}>Löschen?</button> : <IconButton onClick={() => { setConfirmDelete(entry.id); setEditingId(null); }} title="Eintrag löschen" danger><Trash2 size={13} /></IconButton>}
+  </div>;
+  return <div>
+    <div style={{ marginBottom: 20 }}><h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Einkaufsliste</h1><div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Manuelle Einkäufe und fehlende Verbrauchsartikel an einem Ort.</div></div>
+    <div style={{ display: "flex", gap: 8, marginBottom: 20 }}><input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addEntry()} placeholder="Was möchtest du einkaufen?" style={{ ...inputStyle, marginBottom: 0 }} /><button onClick={addEntry} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}><Plus size={14} /> Hinzufügen</button></div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 16 }}><div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>Offen · {openEntries.length}</div>{openEntries.length ? <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>{openEntries.map(renderEntry)}</div> : <div style={{ fontSize: 12.5, color: COLORS.textFaint, textAlign: "center", padding: 20 }}>Alles eingekauft.</div>}</div>
+      {completedEntries.length > 0 && <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 16 }}><div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>Erledigt · {completedEntries.length}</div><div style={{ display: "flex", flexDirection: "column", gap: 7 }}>{completedEntries.map(renderEntry)}</div></div>}
+    </div>
+  </div>;
+}
+function ConsumablesPage({ consumables, persistConsumables, shoppingList, persistShoppingList }) {
   const [newArea, setNewArea] = useState("");
   const [productNames, setProductNames] = useState({});
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -4412,20 +4459,20 @@ function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks 
     const available = !item.available;
     persistConsumables(consumables.map((candidate) => candidate.id === area.id ? { ...candidate, items: (candidate.items || []).map((product) => product.id === item.id ? { ...product, available, history: [...(product.history || []), { date: todayKey(), available }] } : product) } : candidate));
     if (!available) {
-      const hasOpenTask = tasks.some((task) => task.sourceConsumableId === item.id && !task.completed);
-      if (!hasOpenTask) persistTasks([...tasks, createConsumablePurchaseTask(area, item)]);
+      const hasOpenPurchase = shoppingList.some((entry) => entry.sourceConsumableId === item.id && !entry.completed);
+      if (!hasOpenPurchase) persistShoppingList([...shoppingList, createConsumableShoppingItem(area, item)]);
     } else {
-      persistTasks(tasks.map((task) => task.sourceConsumableId === item.id && !task.completed ? { ...task, completed: true, completedAt: todayKey() } : task));
+      persistShoppingList(shoppingList.map((entry) => entry.sourceConsumableId === item.id && !entry.completed ? { ...entry, completed: true, completedAt: todayKey() } : entry));
     }
   };
   const deleteProduct = (areaId, itemId) => {
     persistConsumables(consumables.map((area) => area.id === areaId ? { ...area, items: (area.items || []).filter((item) => item.id !== itemId) } : area));
-    persistTasks(tasks.filter((task) => task.sourceConsumableId !== itemId)); setConfirmDelete(null);
+    persistShoppingList(shoppingList.filter((entry) => entry.sourceConsumableId !== itemId)); setConfirmDelete(null);
   };
   const deleteArea = (areaId) => {
     const itemIds = new Set((consumables.find((area) => area.id === areaId)?.items || []).map((item) => item.id));
     persistConsumables(consumables.filter((area) => area.id !== areaId));
-    persistTasks(tasks.filter((task) => !itemIds.has(task.sourceConsumableId))); setConfirmDelete(null);
+    persistShoppingList(shoppingList.filter((entry) => !itemIds.has(entry.sourceConsumableId))); setConfirmDelete(null);
   };
   const changeHistory = (areaId, itemId, change) => {
     const area = consumables.find((candidate) => candidate.id === areaId);
@@ -4437,9 +4484,9 @@ function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks 
     persistConsumables(consumables.map((candidate) => candidate.id === areaId ? { ...candidate, items: (candidate.items || []).map((item) => item.id === itemId ? { ...item, history, available } : item) } : candidate));
     if (available !== previousItem.available) {
       if (!available) {
-        const hasOpenTask = tasks.some((task) => task.sourceConsumableId === itemId && !task.completed);
-        if (!hasOpenTask) persistTasks([...tasks, createConsumablePurchaseTask(area, previousItem)]);
-      } else persistTasks(tasks.map((task) => task.sourceConsumableId === itemId && !task.completed ? { ...task, completed: true, completedAt: todayKey() } : task));
+        const hasOpenPurchase = shoppingList.some((entry) => entry.sourceConsumableId === itemId && !entry.completed);
+        if (!hasOpenPurchase) persistShoppingList([...shoppingList, createConsumableShoppingItem(area, previousItem)]);
+      } else persistShoppingList(shoppingList.map((entry) => entry.sourceConsumableId === itemId && !entry.completed ? { ...entry, completed: true, completedAt: todayKey() } : entry));
     }
   };
   const currentHistoryItem = historyTarget ? consumables.find((area) => area.id === historyTarget.areaId)?.items?.find((item) => item.id === historyTarget.itemId) : null;
@@ -5107,8 +5154,8 @@ function downloadJSON(filename, obj) {
 }
 
 function SettingsPage({
-  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables,
-  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables,
+  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList,
+  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList,
   onAnthropicKeyChange,
 }) {
   const fileInputRef = useRef(null);
@@ -5119,9 +5166,130 @@ function SettingsPage({
   const handleExport = () => {
     const payload = {
       app: "life-os", version: 1, exportedAt: new Date().toISOString(),
-      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables },
+      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList },
     };
     downloadJSON(`life-os-backup-${todayKey()}.json`, payload);
+  };
+
+  // Excel-Export: mehrere Tabellenblätter mit "flachen" Zeilen (ein Wert pro
+  // Zelle) statt der verschachtelten JSON-Sicherung, damit sich die Daten in
+  // Excel direkt filtern/sortieren/pivotieren lassen.
+  const handleExcelExport = () => {
+    const wb = XLSX.utils.book_new();
+    const addSheet = (name, rows) => {
+      const safeRows = rows && rows.length > 0 ? rows : [{ Hinweis: "Keine Daten vorhanden" }];
+      const ws = XLSX.utils.json_to_sheet(safeRows);
+      XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+    };
+
+    const formatValue = (habit, raw) => {
+      if (raw === undefined || raw === null) return "";
+      if (raw === SKIP_VALUE) return "Übersprungen";
+      if (habit.trackingType === "boolean") return raw === true ? "Ja" : "Nein";
+      if (habit.trackingType === "clock" && typeof raw === "number") return minutesToClock(raw);
+      return raw;
+    };
+
+    const habitsSheet = (habits || []).map((h) => {
+      const stats = simulateHabit(h, entries, todayKey());
+      return {
+        Name: h.name, Kategorie: h.category || "", Schwierigkeit: DIFFICULTY_LABELS[h.difficulty] || h.difficulty,
+        "Tracking-Art": h.trackingType, Zielwert: h.trackingType === "clock" ? minutesToClock(h.target) : h.target,
+        Einheit: h.unit || "", Beschreibung: h.description || "", Erstellt: h.createdAt || "",
+        "Aktuelle Streak": stats.currentStreak, "Beste Streak": stats.longestStreak,
+        "Erfolgsquote (%)": stats.successRate, Gesamtpunkte: stats.totalPoints,
+      };
+    });
+
+    const entriesSheet = [];
+    (habits || []).forEach((h) => {
+      const stats = simulateHabit(h, entries, todayKey());
+      stats.daily.forEach((d) => {
+        if (d.status === "empty") return;
+        entriesSheet.push({
+          Datum: d.date, Habit: h.name, Kategorie: h.category || "",
+          Wert: formatValue(h, entries?.[d.date]?.[h.id]),
+          Status: d.status === "success" ? "Erfüllt" : d.status === "fail" ? "Nicht erfüllt" : "Übersprungen",
+          Punkte: d.delta,
+        });
+      });
+    });
+    entriesSheet.sort((a, b) => a.Datum.localeCompare(b.Datum));
+
+    const tasksSheet = (tasks || []).map((t) => ({
+      Titel: t.title, Kategorie: t.category || "", Punkte: t.points, Erledigt: t.completed ? "Ja" : "Nein",
+      "Erledigt am": t.completedAt || "", "Fällig am": t.dueDate || "", Beschreibung: t.content || "",
+    }));
+
+    const goalsSheet = (goals || []).map((g) => ({
+      Titel: g.title, Kategorie: g.category || "", Punkte: g.points, Erreicht: g.achieved ? "Ja" : "Nein",
+      "Erreicht am": g.achievedAt || "", Beschreibung: g.description || "",
+    }));
+
+    const personsSheet = (persons || []).map((p) => {
+      const stats = personStats(p);
+      const groupLabel = (p.groups && p.groups.length ? p.groups : p.category ? [p.category] : []).join(", ");
+      return {
+        Name: p.name, Gruppe: groupLabel, Geburtstag: p.birthday || "", Info: p.info || "",
+        "Treffen gesamt": stats.total, "Zuletzt getroffen": stats.lastMet || "",
+      };
+    });
+
+    const meetingsSheet = [];
+    (persons || []).forEach((p) => (p.meetings || []).forEach((date) => meetingsSheet.push({ Datum: date, Person: p.name })));
+    meetingsSheet.sort((a, b) => a.Datum.localeCompare(b.Datum));
+
+    const relationshipsSheet = [];
+    const seenPairs = new Set();
+    (persons || []).forEach((p) => (p.relationships || []).forEach((r) => {
+      const pairKey = [p.id, r.personId].sort().join("|");
+      if (seenPairs.has(pairKey)) return;
+      seenPairs.add(pairKey);
+      const target = (persons || []).find((x) => x.id === r.personId);
+      relationshipsSheet.push({ Person: p.name, Beziehung: relationshipLabel(r.type), "Verbunden mit": target ? target.name : "(gelöscht)" });
+    }));
+
+    const journalSheet = Object.keys(journal || {}).sort().map((k) => ({
+      Datum: k, Text: stripHtml(journal[k]?.text), "Coach-Feedback": journal[k]?.feedback || "",
+    })).filter((row) => row.Text || row["Coach-Feedback"]);
+
+    const moodSheet = Object.keys(moods || {}).sort().map((k) => ({
+      Datum: k, Fitness: moods[k].fitness || "", Stimmung: moods[k].mood || "", Gesamt: overallMood(moods[k]) ?? "",
+    }));
+
+    const achievementsSheet = (achievements || []).map((a) => ({
+      Erfolg: (ACHIEVEMENT_DEFS.find((d) => d.id === a.id) || {}).label || a.id, Datum: a.date,
+    }));
+
+    const weeklyReportsSheet = Object.entries(weeklyReports || {}).map(([week, r]) => ({
+      Woche: week, Zeitraum: r.weekStart && r.weekEnd ? `${shortDate(r.weekStart)} - ${shortDate(r.weekEnd)}` : "",
+      Bericht: r.text || "", "Erstellt am": r.generatedAt ? new Date(r.generatedAt).toLocaleString("de-DE") : "",
+    }));
+
+    const consumablesSheet = [];
+    (consumables || []).forEach((area) => (area.items || []).forEach((item) => {
+      consumablesSheet.push({ Bereich: area.name, Artikel: item.name, Verfügbar: item.available ? "Ja" : "Nein", Angelegt: item.createdAt || "" });
+    }));
+
+    const shoppingSheet = (shoppingList || []).map((entry) => ({
+      Artikel: entry.name, Erledigt: entry.completed ? "Ja" : "Nein", "Erledigt am": entry.completedAt || "",
+    }));
+
+    addSheet("Habits", habitsSheet);
+    addSheet("Habit-Einträge", entriesSheet);
+    addSheet("Aufgaben", tasksSheet);
+    addSheet("Ziele", goalsSheet);
+    addSheet("Personen", personsSheet);
+    addSheet("Treffen", meetingsSheet);
+    addSheet("Verbindungen", relationshipsSheet);
+    addSheet("Journal", journalSheet);
+    addSheet("Stimmung", moodSheet);
+    addSheet("Erfolge", achievementsSheet);
+    addSheet("Wochenberichte", weeklyReportsSheet);
+    addSheet("Vorräte", consumablesSheet);
+    addSheet("Einkaufsliste", shoppingSheet);
+
+    XLSX.writeFile(wb, `lifetracker-export-${todayKey()}.xlsx`);
   };
 
   const handleFileSelect = (e) => {
@@ -5162,6 +5330,7 @@ function SettingsPage({
     await persistPersonGroups(Array.isArray(pendingImport.personGroups) ? pendingImport.personGroups : []);
     await persistMoods(pendingImport.moods && typeof pendingImport.moods === "object" ? pendingImport.moods : {});
     await persistConsumables(Array.isArray(pendingImport.consumables) ? pendingImport.consumables : []);
+    await persistShoppingList(Array.isArray(pendingImport.shoppingList) ? pendingImport.shoppingList : []);
     setPendingImport(null);
     setImportSuccess(true);
     setTimeout(() => setImportSuccess(false), 4000);
@@ -5171,6 +5340,7 @@ function SettingsPage({
     habits: Array.isArray(pendingImport.habits) ? pendingImport.habits.length : 0,
     goals: Array.isArray(pendingImport.goals) ? pendingImport.goals.length : 0,
     tasks: Array.isArray(pendingImport.tasks) ? pendingImport.tasks.length : 0,
+    shopping: Array.isArray(pendingImport.shoppingList) ? pendingImport.shoppingList.length : 0,
     persons: Array.isArray(pendingImport.persons) ? pendingImport.persons.length : 0,
     journalDays: pendingImport.journal && typeof pendingImport.journal === "object" ? Object.keys(pendingImport.journal).length : 0,
   } : null;
@@ -5192,6 +5362,17 @@ function SettingsPage({
         <button onClick={handleExport} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 7 }}>
           <Download size={14} /> Daten exportieren
         </button>
+
+        <div style={{ borderTop: `1px solid ${COLORS.borderSoft}`, marginTop: 16, paddingTop: 16 }}>
+          <p style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.6, marginBottom: 14 }}>
+            Excel-Datei (.xlsx) mit einem Tabellenblatt je Datenbereich (u. a. Habit-Einträge, Aufgaben, Ziele, Personen,
+            Treffen, Journal, Stimmung) - zum Auswerten, Filtern und Pivotieren. Für eine Wiederherstellung in der App
+            nutze stattdessen die JSON-Sicherung oben.
+          </p>
+          <button onClick={handleExcelExport} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 7 }}>
+            <Download size={14} /> Excel exportieren (.xlsx)
+          </button>
+        </div>
       </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18 }}>
@@ -5230,7 +5411,7 @@ function SettingsPage({
               <AlertTriangle size={15} /> Import bestätigen
             </div>
             <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.6 }}>
-              Gefunden: {counts.habits} Habits, {counts.goals} Ziele, {counts.tasks} Aufgaben, {counts.persons} Personen, {counts.journalDays} Journal-Tage.
+              Gefunden: {counts.habits} Habits, {counts.goals} Ziele, {counts.tasks} Aufgaben, {counts.shopping} Einkäufe, {counts.persons} Personen, {counts.journalDays} Journal-Tage.
               Das überschreibt <strong style={{ color: COLORS.text }}>alle</strong> aktuell gespeicherten Daten unwiderruflich.
             </div>
             <div style={{ display: "flex", gap: 10 }}>
@@ -5638,6 +5819,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
     { key: "progress", label: "Fortschritt", Icon: TrendingUp },
     { key: "mood", label: "Stimmung", Icon: Heart },
     { key: "consumables", label: "Verbrauch", Icon: Droplet },
+    { key: "shopping", label: "Einkaufsliste", Icon: ShoppingCart },
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
@@ -5697,6 +5879,7 @@ function BottomNav({ page, setPage, hasCoach }) {
     { key: "progress", label: "Verlauf", Icon: TrendingUp },
     { key: "mood", label: "Stimmung", Icon: Heart },
     { key: "consumables", label: "Verbrauch", Icon: Droplet },
+    { key: "shopping", label: "Einkauf", Icon: ShoppingCart },
     { key: "tasks", label: "Tasks", Icon: ClipboardList },
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
@@ -5775,8 +5958,8 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
    ============================================================ */
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList,
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
@@ -5802,14 +5985,19 @@ export default function LifeOS() {
   const allStats = useMemo(() => activeHabits.map((h) => simulateHabit(h, entries, todayKey())), [activeHabits, entries]);
   const totalPoints = allStats.reduce((s, st) => s + st.totalPoints, 0) + totalGoalPoints(goals) + totalTaskPoints(tasks);
 
-  // Globale Bestands-Invariante: jeder fehlende Artikel hat genau eine offene
-  // Beschaffungsaufgabe, unabhängig davon, welche Seite gerade geöffnet ist.
+  // Globale Bestands-Invariante: jeder fehlende Artikel hat genau einen offenen
+  // Einkaufseintrag. Alte, automatisch erzeugte Tasks werden einmalig migriert.
   useEffect(() => {
     if (loading) return;
+    const legacyTasks = tasks.filter((task) => task.sourceConsumableId);
     const missing = consumables.flatMap((area) => (area.items || []).filter((item) => !item.available).map((item) => ({ area, item })));
-    const needed = missing.filter(({ item }) => !tasks.some((task) => task.sourceConsumableId === item.id && !task.completed));
-    if (needed.length) persistTasks([...tasks, ...needed.map(({ area, item }) => createConsumablePurchaseTask(area, item))]);
-  }, [consumables, tasks, loading, persistTasks]);
+    const needed = missing.filter(({ item }) => !shoppingList.some((entry) => entry.sourceConsumableId === item.id && !entry.completed));
+    if (needed.length) persistShoppingList([...shoppingList, ...needed.map(({ area, item }) => {
+      const legacy = legacyTasks.find((task) => task.sourceConsumableId === item.id && !task.completed);
+      return createConsumableShoppingItem(area, item, legacy?.createdAt || todayKey());
+    })]);
+    if (legacyTasks.length) persistTasks(tasks.filter((task) => !task.sourceConsumableId));
+  }, [consumables, shoppingList, tasks, loading, persistShoppingList, persistTasks]);
 
   // Achievement-Check
   useEffect(() => {
@@ -5976,19 +6164,20 @@ export default function LifeOS() {
           )}
           {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} persons={persons} />}
           {page === "mood" && <MoodPage moods={moods} persistMoods={persistMoods} />}
-          {page === "consumables" && <ConsumablesPage consumables={consumables} persistConsumables={persistConsumables} tasks={tasks} persistTasks={persistTasks} />}
+          {page === "consumables" && <ConsumablesPage consumables={consumables} persistConsumables={persistConsumables} shoppingList={shoppingList} persistShoppingList={persistShoppingList} />}
+          {page === "shopping" && <ShoppingListPage shoppingList={shoppingList} persistShoppingList={persistShoppingList} consumables={consumables} persistConsumables={persistConsumables} />}
           {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
           {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} />}
-          {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} consumables={consumables} persistConsumables={persistConsumables} />}
+          {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} />}
           {page === "settings" && (
             <SettingsPage
               habits={habits} entries={entries} achievements={achievements} coach={coach}
-              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables}
+              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList}
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
               persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
-              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables}
+              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables} persistShoppingList={persistShoppingList}
               onAnthropicKeyChange={refreshCoachKey}
             />
           )}
