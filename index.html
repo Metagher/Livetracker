@@ -147,6 +147,17 @@ function installStorageShim() {
       if (!rows.length) throw new Error("Kein Eintrag für " + key);
       return { key, value: rows[0].value, shared: false };
     },
+    getMany: async (keys) => {
+      const cfg = getConfig();
+      if (!cfg?.supabaseUrl || !cfg?.supabaseKey) throw new Error("Nicht konfiguriert");
+      const filter = keys.map((key) => encodeURIComponent(key)).join(",");
+      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store?key=in.(${filter})&select=key,value`, {
+        headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}` },
+      });
+      if (!res.ok) throw new Error("Supabase-Fehler: " + res.status);
+      const rows = await res.json();
+      return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+    },
     set: async (key, value) => {
       const cfg = getConfig();
       if (!cfg?.supabaseUrl || !cfg?.supabaseKey) throw new Error("Nicht konfiguriert");
@@ -380,6 +391,20 @@ function taskPointsInRange(tasks, dateKeys) {
 const pad = (n) => String(n).padStart(2, "0");
 const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const todayKey = () => toKey(new Date());
+function useCurrentDateKey() {
+  const [dateKey, setDateKey] = useState(todayKey);
+  useEffect(() => {
+    let timer;
+    const scheduleNextDay = () => {
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+      timer = setTimeout(() => { setDateKey(todayKey()); scheduleNextDay(); }, Math.max(1000, next - now));
+    };
+    scheduleNextDay();
+    return () => clearTimeout(timer);
+  }, []);
+  return dateKey;
+}
 const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
 const keyToDate = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
 const isValidDateKey = (key) => {
@@ -499,15 +524,24 @@ function earliestTrackedDate(habit, entries) {
   }
   return earliest;
 }
+function earliestTrackedDatesByHabit(entries) {
+  const result = {};
+  Object.entries(entries || {}).forEach(([dateKey, day]) => {
+    Object.keys(day || {}).forEach((habitId) => {
+      if (!result[habitId] || dateKey < result[habitId]) result[habitId] = dateKey;
+    });
+  });
+  return result;
+}
 
 // Simuliert einen Habit chronologisch ab Erstellung (bzw. ab dem frühesten
 // rückwirkenden Eintrag) und liefert tägliche Streak-/Punktewerte.
 // Positive und negative Streaks wachsen symmetrisch: je länger am Stück
 // erfüllt bzw. nicht erfüllt wurde, desto größer der Punktegewinn/-verlust.
-function simulateHabit(habit, entries, untilKey) {
+function simulateHabit(habit, entries, untilKey, knownEarliest) {
   const base = DIFFICULTY_BASE[habit.difficulty] || DIFFICULTY_BASE.mittel;
   const startKey = habit.startDate || habit.createdAt;
-  const earliest = earliestTrackedDate(habit, entries);
+  const earliest = knownEarliest === undefined ? earliestTrackedDate(habit, entries) : knownEarliest;
   const effectiveStartKey = earliest && earliest < startKey ? earliest : startKey;
   const start = keyToDate(effectiveStartKey);
   const end = keyToDate(untilKey);
@@ -523,6 +557,7 @@ function simulateHabit(habit, entries, untilKey) {
   let totalNegativeMilestonePenalty = 0;
   const daily = [];
 
+  const currentDayKey = todayKey();
   while (cursor <= end) {
     const k = toKey(cursor);
     const status = dayStatus(habit, entries, k);
@@ -560,7 +595,7 @@ function simulateHabit(habit, entries, untilKey) {
       // "empty": nur heute zählt als "noch offen" (bricht nichts).
       // Vergangene ungetrackte Tage sind neutral (0 Punkte), brechen aber
       // sowohl positive als auch negative Streaks.
-      if (k !== todayKey()) {
+      if (k !== currentDayKey) {
         streak = 0;
         negStreak = 0;
       }
@@ -638,48 +673,39 @@ function useLifeOSData() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
-  const readStoredJSON = (result, fallback) => {
-    if (result.status !== "fulfilled" || !result.value) return fallback;
-    try { return JSON.parse(result.value.value); } catch { return fallback; }
+  const writeQueuesRef = useRef({});
+  const readStoredJSON = (stored, key, fallback) => {
+    if (!Object.prototype.hasOwnProperty.call(stored, key)) return fallback;
+    try { return JSON.parse(stored[key]); } catch { throw new Error(`Ungültige gespeicherte Daten: ${key}`); }
   };
+  const enqueueWrite = useCallback((key, value) => {
+    const previous = writeQueuesRef.current[key] || Promise.resolve();
+    const job = previous.catch(() => {}).then(() => window.storage.set(key, JSON.stringify(value)));
+    writeQueuesRef.current[key] = job;
+    return job.catch(() => { setError("Eine Änderung konnte nicht gespeichert werden. Bitte Verbindung prüfen und erneut versuchen."); });
+  }, []);
 
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const [h, e, a, c, j, w, g, t, p, cat, pg, moodData, consumableData, shoppingData, noteData, noteFolderData] = await Promise.allSettled([
-        window.storage.get("los-habits"),
-        window.storage.get("los-entries"),
-        window.storage.get("los-achievements"),
-        window.storage.get("los-coach"),
-        window.storage.get("los-journal"),
-        window.storage.get("los-weekly-reports"),
-        window.storage.get("los-goals"),
-        window.storage.get("los-tasks"),
-        window.storage.get("los-persons"),
-        window.storage.get("los-categories"),
-        window.storage.get("los-person-groups"),
-        window.storage.get("los-moods"),
-        window.storage.get("los-consumables"),
-        window.storage.get("los-shopping-list"),
-        window.storage.get("los-notes"),
-        window.storage.get("los-note-folders"),
-      ]);
-      setHabits(readStoredJSON(h, []));
-      setEntries(readStoredJSON(e, {}));
-      setAchievements(readStoredJSON(a, []));
-      setCoach(readStoredJSON(c, null));
-      setJournal(readStoredJSON(j, {}));
-      setWeeklyReports(readStoredJSON(w, {}));
-      setGoals(readStoredJSON(g, []));
-      setTasks(readStoredJSON(t, []));
-      setPersons(readStoredJSON(p, []));
-      setCategories(readStoredJSON(cat, []));
-      setPersonGroups(readStoredJSON(pg, []));
-      setMoods(readStoredJSON(moodData, {}));
-      setConsumables(readStoredJSON(consumableData, []));
-      setShoppingList(readStoredJSON(shoppingData, []));
-      setNotes(readStoredJSON(noteData, []));
-      setNoteFolders(readStoredJSON(noteFolderData, []));
+      const keys = ["los-habits", "los-entries", "los-achievements", "los-coach", "los-journal", "los-weekly-reports", "los-goals", "los-tasks", "los-persons", "los-categories", "los-person-groups", "los-moods", "los-consumables", "los-shopping-list", "los-notes", "los-note-folders"];
+      const stored = await window.storage.getMany(keys);
+      setHabits(readStoredJSON(stored, "los-habits", []));
+      setEntries(readStoredJSON(stored, "los-entries", {}));
+      setAchievements(readStoredJSON(stored, "los-achievements", []));
+      setCoach(readStoredJSON(stored, "los-coach", null));
+      setJournal(readStoredJSON(stored, "los-journal", {}));
+      setWeeklyReports(readStoredJSON(stored, "los-weekly-reports", {}));
+      setGoals(readStoredJSON(stored, "los-goals", []));
+      setTasks(readStoredJSON(stored, "los-tasks", []));
+      setPersons(readStoredJSON(stored, "los-persons", []));
+      setCategories(readStoredJSON(stored, "los-categories", []));
+      setPersonGroups(readStoredJSON(stored, "los-person-groups", []));
+      setMoods(readStoredJSON(stored, "los-moods", {}));
+      setConsumables(readStoredJSON(stored, "los-consumables", []));
+      setShoppingList(readStoredJSON(stored, "los-shopping-list", []));
+      setNotes(readStoredJSON(stored, "los-notes", []));
+      setNoteFolders(readStoredJSON(stored, "los-note-folders", []));
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -698,68 +724,68 @@ function useLifeOSData() {
 
   const persistHabits = useCallback(async (next) => {
     setHabits(next);
-    try { await window.storage.set("los-habits", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-habits", next);
+  }, [enqueueWrite]);
   const persistEntries = useCallback(async (next) => {
     setEntries(next);
-    try { await window.storage.set("los-entries", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-entries", next);
+  }, [enqueueWrite]);
   const persistAchievements = useCallback(async (next) => {
     setAchievements(next);
-    try { await window.storage.set("los-achievements", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-achievements", next);
+  }, [enqueueWrite]);
   const persistCoach = useCallback(async (next) => {
     setCoach(next);
-    try { await window.storage.set("los-coach", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-coach", next);
+  }, [enqueueWrite]);
   const persistJournal = useCallback(async (next) => {
     setJournal(next);
-    try { await window.storage.set("los-journal", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-journal", next);
+  }, [enqueueWrite]);
   const persistWeeklyReports = useCallback(async (next) => {
     setWeeklyReports(next);
-    try { await window.storage.set("los-weekly-reports", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-weekly-reports", next);
+  }, [enqueueWrite]);
   const persistGoals = useCallback(async (next) => {
     setGoals(next);
-    try { await window.storage.set("los-goals", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-goals", next);
+  }, [enqueueWrite]);
   const persistTasks = useCallback(async (next) => {
     setTasks(next);
-    try { await window.storage.set("los-tasks", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-tasks", next);
+  }, [enqueueWrite]);
   const persistPersons = useCallback(async (next) => {
     setPersons(next);
-    try { await window.storage.set("los-persons", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-persons", next);
+  }, [enqueueWrite]);
   const persistCategories = useCallback(async (next) => {
     setCategories(next);
-    try { await window.storage.set("los-categories", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-categories", next);
+  }, [enqueueWrite]);
   const persistPersonGroups = useCallback(async (next) => {
     setPersonGroups(next);
-    try { await window.storage.set("los-person-groups", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-person-groups", next);
+  }, [enqueueWrite]);
   const persistMoods = useCallback(async (next) => {
     setMoods(next);
-    try { await window.storage.set("los-moods", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-moods", next);
+  }, [enqueueWrite]);
   const persistConsumables = useCallback(async (next) => {
     setConsumables(next);
-    try { await window.storage.set("los-consumables", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-consumables", next);
+  }, [enqueueWrite]);
   const persistShoppingList = useCallback(async (next) => {
     setShoppingList(next);
-    try { await window.storage.set("los-shopping-list", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-shopping-list", next);
+  }, [enqueueWrite]);
   const persistNotes = useCallback(async (next) => {
     setNotes(next);
-    try { await window.storage.set("los-notes", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-notes", next);
+  }, [enqueueWrite]);
   const persistNoteFolders = useCallback(async (next) => {
     setNoteFolders(next);
-    try { await window.storage.set("los-note-folders", JSON.stringify(next)); } catch {}
-  }, []);
+    await enqueueWrite("los-note-folders", next);
+  }, [enqueueWrite]);
 
   return {
     habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, loading, refreshing, error,
@@ -1615,29 +1641,28 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
    @section HABIT-ROW — Einzeiliger Habit-Eintrag mit Abhaken (Dashboard + Habits-Liste)
    HABIT ROW (Dashboard / Habits list)
    ============================================================ */
-function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId }) {
-  const isMobile = useIsMobile();
-  const stats = useMemo(() => simulateHabit(habit, entries, todayKey()), [habit, entries]);
+function HabitRow({ habit, entries, stats, isMobile, onToggle, onOpenDetail, onEdit, celebrateId }) {
+  const currentDateKey = stats.daily.at(-1)?.date || todayKey();
   const Icon = iconFor(habit.icon);
-  const status = dayStatus(habit, entries, todayKey());
+  const status = dayStatus(habit, entries, currentDateKey);
   const isDone = status === "success";
   const isFailed = status === "fail";
   const dotCount = isMobile ? 7 : 14;
   const last14 = useMemo(() => {
     const days = [];
-    for (let i = dotCount - 1; i >= 0; i--) days.push(toKey(addDays(new Date(), -i)));
+    for (let i = dotCount - 1; i >= 0; i--) days.push(toKey(addDays(keyToDate(currentDateKey), -i)));
     return days;
-  }, [dotCount]);
+  }, [dotCount, currentDateKey]);
 
   const handleClick = () => {
     if (habit.trackingType === "boolean") {
-      onToggle(habit.id, todayKey(), isDone || isFailed ? undefined : true);
+      onToggle(habit.id, currentDateKey, isDone || isFailed ? undefined : true);
     } else {
       onOpenDetail(habit);
     }
   };
   const handleFail = () => {
-    onToggle(habit.id, todayKey(), isFailed ? undefined : false);
+    onToggle(habit.id, currentDateKey, isFailed ? undefined : false);
   };
 
   return (
@@ -2126,8 +2151,8 @@ function MiniStat({ label, value, unit }) {
 /* ============================================================
    @section DASHBOARD — Startseite: Punkte, Coach-Teaser, Geburtstage, Aufgaben, Habits
    ============================================================ */
-function motivationLine(active, entries, allStats) {
-  const done = active.filter((h) => dayStatus(h, entries, todayKey()) === "success").length;
+function motivationLine(active, entries, allStats, dateKey = todayKey()) {
+  const done = active.filter((h) => dayStatus(h, entries, dateKey) === "success").length;
   const remaining = active.length - done;
   if (active.length === 0) return "Leg los und erstelle deinen ersten Habit.";
   if (remaining === 0) return "Perfekter Tag – alle Habits erfüllt. 🔥";
@@ -2139,12 +2164,11 @@ function motivationLine(active, entries, allStats) {
 
 function Dashboard({
   habits, entries, onToggle, onOpenDetail, onEdit, onCreate, celebrateId, coach, onOpenCoach, hasCoach,
-  goals, tasks, persons, persistTasks, onOpenTasks, moods, persistMoods, onOpenMood,
+  goals, tasks, persons, persistTasks, onOpenTasks, moods, persistMoods, onOpenMood, allStats, statsByHabitId, isMobile, currentDateKey,
 }) {
   const active = habits;
-  const allStats = useMemo(() => active.map((h) => simulateHabit(h, entries, todayKey())), [active, entries]);
   const totalToday = useMemo(() => {
-    const k = todayKey();
+    const k = currentDateKey;
     const habitPart = allStats.reduce((sum, s) => sum + (s.daily.find((d) => d.date === k)?.delta || 0), 0);
     return habitPart + goalPointsOnDate(goals, k) + taskPointsOnDate(tasks, k);
   }, [allStats, goals, tasks]);
@@ -2156,21 +2180,22 @@ function Dashboard({
   }, [allStats, goals, tasks]);
   const topStreaks = [...active].map((h, i) => ({ h, s: allStats[i] })).filter((x) => x.s.currentStreak > 0).sort((a, b) => b.s.currentStreak - a.s.currentStreak).slice(0, 5);
 
-  const weekKeys = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(startOfWeek(new Date()), i))), []);
-  const todayTasks = useMemo(() => (tasks || []).filter((t) => !t.completed && t.dueDate === todayKey()), [tasks]);
+  const weekKeys = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(startOfWeek(keyToDate(currentDateKey)), i))), [currentDateKey]);
+  const todayTasks = useMemo(() => (tasks || []).filter((t) => !t.completed && t.dueDate === currentDateKey), [tasks, currentDateKey]);
   const weekTasks = useMemo(() => (tasks || [])
-    .filter((t) => !t.completed && t.dueDate && t.dueDate !== todayKey() && weekKeys.includes(t.dueDate))
+    .filter((t) => !t.completed && t.dueDate && t.dueDate !== currentDateKey && weekKeys.includes(t.dueDate))
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate)), [tasks, weekKeys]);
   const upcomingBirthdays = useMemo(() => {
+    const currentDate = keyToDate(currentDateKey);
     return (persons || [])
-      .filter((p) => p.birthday && isValidDateKey(p.birthday) && keyToDate(p.birthday) <= new Date())
-      .map((p) => ({ person: p, days: daysUntilBirthday(p.birthday), nextAge: ageAtNextBirthday(p.birthday) }))
+      .filter((p) => p.birthday && isValidDateKey(p.birthday) && keyToDate(p.birthday) <= currentDate)
+      .map((p) => ({ person: p, days: daysUntilBirthday(p.birthday, currentDate), nextAge: ageAtNextBirthday(p.birthday, currentDate) }))
       .filter((x) => x.days <= 14)
       .sort((a, b) => a.days - b.days);
-  }, [persons]);
+  }, [persons, currentDateKey]);
 
   const completeTask = (task) => {
-    persistTasks((tasks || []).map((t) => t.id === task.id ? { ...t, completed: true, completedAt: todayKey() } : t));
+    persistTasks((tasks || []).map((t) => t.id === task.id ? { ...t, completed: true, completedAt: currentDateKey } : t));
   };
 
   return (
@@ -2180,12 +2205,12 @@ function Dashboard({
         <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 30, fontWeight: 600, margin: 0 }}>
           Guten Tag. <span style={{ color: COLORS.ember2 }}>{totalToday > 0 ? `+${totalToday}` : totalToday} Punkte heute</span>
         </h1>
-        <p style={{ color: COLORS.textMuted, fontSize: 14.5, marginTop: 6 }}>{motivationLine(active, entries, allStats)}</p>
+        <p style={{ color: COLORS.textMuted, fontSize: 14.5, marginTop: 6 }}>{motivationLine(active, entries, allStats, currentDateKey)}</p>
       </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 16, marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><SectionLabel>Wie geht es dir heute?</SectionLabel><button onClick={onOpenMood} style={{ ...ghostBtn, padding: "5px 9px", fontSize: 10.5 }}>Zum Verlauf</button></div>
-        <MoodInput dateKey={todayKey()} moods={moods} persistMoods={persistMoods} compact />
+        <MoodInput dateKey={currentDateKey} moods={moods} persistMoods={persistMoods} compact />
       </div>
 
       {hasCoach && coach?.quote && (
@@ -2305,8 +2330,8 @@ function Dashboard({
         <div style={{ display: "flex", flexDirection: "column", gap: 18, marginBottom: 26 }}>
           {groupHabitsByCategory(
             [...active].sort((a, b) => {
-              const aDone = dayStatus(a, entries, todayKey()) === "success" ? 1 : 0;
-              const bDone = dayStatus(b, entries, todayKey()) === "success" ? 1 : 0;
+              const aDone = dayStatus(a, entries, currentDateKey) === "success" ? 1 : 0;
+              const bDone = dayStatus(b, entries, currentDateKey) === "success" ? 1 : 0;
               return aDone - bDone;
             })
           ).map(({ category, habits: groupHabits }) => (
@@ -2317,7 +2342,7 @@ function Dashboard({
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {groupHabits.map((h) => (
-                  <HabitRow key={h.id} habit={h} entries={entries} onToggle={onToggle} onOpenDetail={onOpenDetail} onEdit={onEdit} celebrateId={celebrateId} />
+                  <HabitRow key={h.id} habit={h} entries={entries} stats={statsByHabitId[h.id]} isMobile={isMobile} onToggle={onToggle} onOpenDetail={onOpenDetail} onEdit={onEdit} celebrateId={celebrateId} />
                 ))}
               </div>
             </div>
@@ -2376,7 +2401,7 @@ function EmptyState({ onCreate }) {
 /* ============================================================
    @section HABITS-PAGE — Vollständige Habit-Liste (alle Habits, nach Kategorie)
    ============================================================ */
-function HabitsPage({ habits, entries, onToggle, onOpenDetail, onEdit, onCreate }) {
+function HabitsPage({ habits, entries, statsByHabitId, isMobile, onToggle, onOpenDetail, onEdit, onCreate }) {
   const list = habits;
 
   return (
@@ -2399,7 +2424,7 @@ function HabitsPage({ habits, entries, onToggle, onOpenDetail, onEdit, onCreate 
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {groupHabits.map((h) => (
-                  <HabitRow key={h.id} habit={h} entries={entries} onToggle={onToggle} onOpenDetail={onOpenDetail} onEdit={onEdit} />
+                  <HabitRow key={h.id} habit={h} entries={entries} stats={statsByHabitId[h.id]} isMobile={isMobile} onToggle={onToggle} onOpenDetail={onOpenDetail} onEdit={onEdit} />
                 ))}
               </div>
             </div>
@@ -2445,10 +2470,8 @@ function buildYearWeeklyHeatmap(year, dailyStatusMap) {
    @section PROGRESS-PAGE — "Fortschritt": Recharts-Diagramme + Erfolge-Grid
    PROGRESS PAGE (Diagramme + Erfolge)
    ============================================================ */
-function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) {
-  const isMobile = useIsMobile();
+function ProgressPage({ habits, entries, achievements, goals, tasks, persons, allStats, isMobile }) {
   const active = habits;
-  const allStats = useMemo(() => active.map((h) => simulateHabit(h, entries, todayKey())), [active, entries]);
   const [rangeDays, setRangeDays] = useState(30);
 
   const dailyPointsMap = useMemo(() => {
@@ -2497,6 +2520,7 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     const map = {};
     allStats.forEach((s) => s.daily.forEach((d) => {
       if (d.status === "empty") return;
+      if (d.status === "skip") return;
       if (!map[d.date]) map[d.date] = { success: 0, fail: 0 };
       map[d.date][d.status] += 1;
     }));
@@ -2599,38 +2623,46 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
     // hunderte oder tausende Diagrammbalken, ohne Treffen wegzulassen.
     const useYears = rangeDays === "all" && totalMonths > 120;
     const meetingPersons = (persons || []).filter((person) => person.meetingTrackingEnabled !== false);
+    const meetingDates = meetingPersons.flatMap((person) => person.meetings || []);
+    const rangeMeetingDates = meetingDates.filter((date) => date >= startKey && date <= endKey);
     const rows = meetingPersons.map((person) => {
       const dates = (person.meetings || []).filter((date) => date >= startKey && date <= endKey);
       return { person, count: dates.length, lastDate: dates.slice().sort().at(-1) || null };
     }).filter((row) => row.count > 0).sort((a, b) => b.count - a.count || a.person.name.localeCompare(b.person.name, "de"));
 
     const previousCount = periodAnalysis.previous
-      ? meetingPersons.reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= toKey(addDays(keyToDate(startKey), -periodAnalysis.calendarDays)) && date < startKey).length, 0)
+      ? meetingDates.filter((date) => date >= toKey(addDays(keyToDate(startKey), -periodAnalysis.calendarDays)) && date < startKey).length
       : null;
     const currentCount = rows.reduce((sum, row) => sum + row.count, 0);
 
     const buckets = [];
     if (useWeeks) {
+      const counts = {};
+      rangeMeetingDates.forEach((date) => { const key = toKey(startOfWeek(keyToDate(date))); counts[key] = (counts[key] || 0) + 1; });
       let cursor = startOfWeek(keyToDate(startKey));
       while (cursor <= keyToDate(endKey)) {
         const bucketStart = toKey(cursor);
         const bucketEnd = toKey(addDays(cursor, 6));
-        const count = meetingPersons.reduce((sum, person) => sum + (person.meetings || []).filter((date) => date >= bucketStart && date <= bucketEnd && date >= startKey && date <= endKey).length, 0);
+        const count = counts[bucketStart] || 0;
         buckets.push({ key: bucketStart, label: `KW ${isoWeekNumber(cursor)}`, fullLabel: `${shortDate(bucketStart)} – ${shortDate(bucketEnd)}`, treffen: count });
         cursor = addDays(cursor, 7);
       }
     } else if (!useYears) {
+      const counts = {};
+      rangeMeetingDates.forEach((date) => { const key = date.slice(0, 7); counts[key] = (counts[key] || 0) + 1; });
       let cursor = startOfMonth(keyToDate(startKey));
       while (cursor <= keyToDate(endKey)) {
         const prefix = toKey(cursor).slice(0, 7);
-        const count = meetingPersons.reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
+        const count = counts[prefix] || 0;
         buckets.push({ key: prefix, label: cursor.toLocaleDateString("de-DE", { month: "short", year: "2-digit" }), fullLabel: cursor.toLocaleDateString("de-DE", { month: "long", year: "numeric" }), treffen: count });
         cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
       }
     } else {
+      const counts = {};
+      rangeMeetingDates.forEach((date) => { const key = date.slice(0, 4); counts[key] = (counts[key] || 0) + 1; });
       for (let year = startDate.getFullYear(); year <= new Date().getFullYear(); year++) {
         const prefix = String(year);
-        const count = meetingPersons.reduce((sum, person) => sum + (person.meetings || []).filter((date) => date.startsWith(prefix) && date >= startKey && date <= endKey).length, 0);
+        const count = counts[prefix] || 0;
         buckets.push({ key: prefix, label: prefix, fullLabel: prefix, treffen: count });
       }
     }
@@ -2663,30 +2695,20 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons }) 
   const yearWeeklyHeatmap = useMemo(() => buildYearWeeklyHeatmap(viewYear, filteredDailyStatusMap), [viewYear, filteredDailyStatusMap]);
 
   const monthlyCategoryStats = useMemo(() => {
-    return Array.from({ length: 12 }, (_, m) => {
-      const prefix = `${viewYear}-${pad(m + 1)}`;
-      const map = {};
-      active.forEach((h, i) => {
-        const pts = allStats[i].daily.filter((d) => d.date.startsWith(prefix) && d.date >= periodAnalysis.startKey && d.date <= periodAnalysis.endKey).reduce((s, d) => s + d.delta, 0);
-        if (pts !== 0) {
-          const cat = categoryOf(h);
-          map[cat] = (map[cat] || 0) + pts;
-        }
-      });
-      (tasks || []).forEach((t) => {
-        if (t.completed && t.completedAt && t.completedAt.startsWith(prefix) && t.completedAt >= periodAnalysis.startKey && t.completedAt <= periodAnalysis.endKey) {
-          const cat = categoryOf(t);
-          map[cat] = (map[cat] || 0) + t.points;
-        }
-      });
-      (goals || []).forEach((g) => {
-        if (g.achieved && g.achievedAt && g.achievedAt.startsWith(prefix) && g.achievedAt >= periodAnalysis.startKey && g.achievedAt <= periodAnalysis.endKey) {
-          const cat = categoryOf(g);
-          map[cat] = (map[cat] || 0) + g.points;
-        }
-      });
-      return Object.entries(map).map(([category, points]) => ({ category, points })).sort((a, b) => b.points - a.points);
+    const monthMaps = Array.from({ length: 12 }, () => ({}));
+    const addPoints = (date, category, points) => {
+      if (!date || date < periodAnalysis.startKey || date > periodAnalysis.endKey || !date.startsWith(String(viewYear))) return;
+      const month = Number(date.slice(5, 7)) - 1;
+      if (month < 0 || month > 11 || !points) return;
+      monthMaps[month][category] = (monthMaps[month][category] || 0) + points;
+    };
+    active.forEach((habit, index) => {
+      const category = categoryOf(habit);
+      allStats[index].daily.forEach((day) => addPoints(day.date, category, day.delta));
     });
+    (tasks || []).forEach((task) => { if (task.completed) addPoints(task.completedAt, categoryOf(task), task.points); });
+    (goals || []).forEach((goal) => { if (goal.achieved) addPoints(goal.achievedAt, categoryOf(goal), goal.points); });
+    return monthMaps.map((map) => Object.entries(map).map(([category, points]) => ({ category, points })).sort((a, b) => b.points - a.points));
   }, [active, allStats, tasks, goals, viewYear, periodAnalysis.startKey, periodAnalysis.endKey]);
   const [hoveredMonth, setHoveredMonth] = useState(null);
 
@@ -3188,7 +3210,7 @@ async function fetchCoachAnalysis(summary) {
   return { analysis, quote };
 }
 
-function CoachPage({ habits, entries, coach, persistCoach, goals, tasks, journal, weeklyReports, persistWeeklyReports }) {
+function CoachPage({ habits, entries, coach, persistCoach, goals, tasks, journal, weeklyReports, persistWeeklyReports, statsByHabitId }) {
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [err, setErr] = useState(null);
   const active = habits;
@@ -3205,9 +3227,9 @@ function CoachPage({ habits, entries, coach, persistCoach, goals, tasks, journal
   const weekReport = (weeklyReports || {})[weekKey];
 
   const perHabitDailyMap = useMemo(() => habits.map((h) => {
-    const s = simulateHabit(h, entries, todayKey());
+    const s = statsByHabitId[h.id];
     return { habit: h, stats: s, map: Object.fromEntries(s.daily.map((d) => [d.date, d])) };
-  }), [habits, entries]);
+  }), [habits, statsByHabitId]);
 
   const runAnalysis = async () => {
     setLoadingAnalysis(true);
@@ -3566,8 +3588,7 @@ const rtfBtnStyle = {
   display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
 };
 
-function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, hasCoach, moods, persistMoods }) {
-  const isMobile = useIsMobile();
+function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, hasCoach, moods, persistMoods, statsByHabitId, isMobile, currentDateKey }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [selectedDay, setSelectedDay] = useState(todayKey());
   const [loadingFeedback, setLoadingFeedback] = useState(false);
@@ -3585,9 +3606,9 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
   const isFuture = (k) => k > todayKey();
 
   const perHabitDailyMap = useMemo(() => habits.map((h) => {
-    const s = simulateHabit(h, entries, todayKey());
+    const s = statsByHabitId[h.id];
     return { habit: h, map: Object.fromEntries(s.daily.map((d) => [d.date, d])) };
-  }), [habits, entries]);
+  }), [habits, statsByHabitId]);
 
   const buildExportMarkdown = (fromKey, toKeyStr) => {
     if (!fromKey || !toKeyStr || fromKey > toKeyStr) return null;
@@ -3891,14 +3912,14 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
    Langfristige Ziele mit Beschreibung und Punktebelohnung bei
    Erfüllung. Werden dem Coach als Kontext für die Habits gegeben.
    ============================================================ */
-function GoalsPage({ goals, persistGoals, habits, persistHabits, entries, categories, onAddCategory }) {
+function GoalsPage({ goals, persistGoals, habits, persistHabits, entries, categories, onAddCategory, statsByHabitId, currentDateKey }) {
   const [showModal, setShowModal] = useState(false);
   const [modalGoal, setModalGoal] = useState(undefined);
 
   const achievedCount = goals.filter((g) => g.achieved).length;
   const totalGoalPoints = goals.filter((g) => g.achieved).reduce((s, g) => s + g.points, 0);
 
-  const last7Keys = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(new Date(), -(6 - i)))), []);
+  const last7Keys = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(keyToDate(currentDateKey), -(6 - i)))), [currentDateKey]);
 
   const linkedHabitsByGoal = useMemo(() => {
     const map = {};
@@ -3911,11 +3932,11 @@ function GoalsPage({ goals, persistGoals, habits, persistHabits, entries, catego
   const dailyMapByHabitId = useMemo(() => {
     const map = {};
     habits.forEach((h) => {
-      const s = simulateHabit(h, entries, todayKey());
+      const s = statsByHabitId[h.id];
       map[h.id] = Object.fromEntries(s.daily.map((d) => [d.date, d]));
     });
     return map;
-  }, [habits, entries]);
+  }, [habits, statsByHabitId]);
 
   const weekDataByGoal = useMemo(() => {
     const map = {};
@@ -4628,27 +4649,27 @@ function MoodInput({ dateKey, moods, persistMoods, compact = false, onComplete }
   </div>;
 }
 
-function MoodPage({ moods, persistMoods }) {
+function MoodPage({ moods, persistMoods, currentDateKey }) {
   const [selectedDate, setSelectedDate] = useState(todayKey());
   const [celebrate, setCelebrate] = useState(false);
   const series = useMemo(() => Object.keys(moods).sort().slice(-60).map((date) => ({ date: shortDate(date), fitness: moods[date].fitness || null, mood: moods[date].mood || null, overall: overallMood(moods[date]) })), [moods]);
 
   const streak = useMemo(() => moodLoggingStreak(moods), [moods]);
-  const weekKeys = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(startOfWeek(new Date()), i))), []);
+  const weekKeys = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(startOfWeek(keyToDate(currentDateKey)), i))), [currentDateKey]);
   const lastWeekKeys = useMemo(() => weekKeys.map((k) => toKey(addDays(keyToDate(k), -7))), [weekKeys]);
   const weekAvg = moodAverage(moods, weekKeys);
   const lastWeekAvg = moodAverage(moods, lastWeekKeys);
   const monthAvg = useMemo(() => {
-    const prefix = todayKey().slice(0, 7);
+    const prefix = currentDateKey.slice(0, 7);
     return moodAverage(moods, Object.keys(moods).filter((k) => k.startsWith(prefix)));
-  }, [moods]);
+  }, [moods, currentDateKey]);
   const bestDay = useMemo(() => {
-    const prefix = todayKey().slice(0, 7);
+    const prefix = currentDateKey.slice(0, 7);
     const entries = Object.keys(moods).filter((k) => k.startsWith(prefix)).map((k) => ({ date: k, value: overallMood(moods[k]) })).filter((e) => e.value !== null);
     return entries.length ? entries.reduce((best, e) => (e.value > best.value ? e : best)) : null;
-  }, [moods]);
+  }, [moods, currentDateKey]);
 
-  const todayOverall = overallMood(moods[todayKey()]);
+  const todayOverall = overallMood(moods[currentDateKey]);
   const heroEmoji = moodEmojiFor(todayOverall);
   const heroLine = todayOverall !== null
     ? `Heute fühlst du dich bei ${todayOverall} / 5 - ${todayOverall >= 4 ? "richtig gut, schön zu sehen!" : todayOverall < 2.5 ? "sei heute besonders gut zu dir." : "so lala, das ist völlig okay."}`
@@ -6346,6 +6367,7 @@ export default function LifeOS() {
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
+  const currentDateKey = useCurrentDateKey();
   const addCategory = (name) => {
     if (!name || categories.includes(name)) return;
     persistCategories([...categories, name]);
@@ -6362,30 +6384,32 @@ export default function LifeOS() {
   const [detailHabit, setDetailHabit] = useState(null);
   const [celebrateId, setCelebrateId] = useState(null);
   const [milestoneToast, setMilestoneToast] = useState(null);
-  const initialized = useRef(false);
 
   const activeHabits = habits;
-  const allStats = useMemo(() => activeHabits.map((h) => simulateHabit(h, entries, todayKey())), [activeHabits, entries]);
+  const earliestByHabit = useMemo(() => earliestTrackedDatesByHabit(entries), [entries]);
+  const allStats = useMemo(() => activeHabits.map((habit) => simulateHabit(habit, entries, currentDateKey, earliestByHabit[habit.id] || null)), [activeHabits, entries, currentDateKey, earliestByHabit]);
+  const statsByHabitId = useMemo(() => Object.fromEntries(activeHabits.map((habit, index) => [habit.id, allStats[index]])), [activeHabits, allStats]);
   const totalPoints = allStats.reduce((s, st) => s + st.totalPoints, 0) + totalGoalPoints(goals) + totalTaskPoints(tasks);
 
   // Globale Bestands-Invariante: jeder fehlende Artikel hat genau einen offenen
   // Einkaufseintrag. Alte, automatisch erzeugte Tasks werden einmalig migriert.
   useEffect(() => {
     if (loading) return;
-    const legacyTasks = tasks.filter((task) => task.sourceConsumableId);
+    const legacyTasks = tasks.filter((task) => task.sourceConsumableId && !task.completed);
+    const legacyByConsumable = new Map(legacyTasks.map((task) => [task.sourceConsumableId, task]));
+    const openShoppingIds = new Set(shoppingList.filter((entry) => !entry.completed).map((entry) => entry.sourceConsumableId));
     const missing = consumables.flatMap((area) => (area.items || []).filter((item) => !item.available).map((item) => ({ area, item })));
-    const needed = missing.filter(({ item }) => !shoppingList.some((entry) => entry.sourceConsumableId === item.id && !entry.completed));
+    const needed = missing.filter(({ item }) => !openShoppingIds.has(item.id));
     if (needed.length) persistShoppingList([...shoppingList, ...needed.map(({ area, item }) => {
-      const legacy = legacyTasks.find((task) => task.sourceConsumableId === item.id && !task.completed);
+      const legacy = legacyByConsumable.get(item.id);
       return createConsumableShoppingItem(area, item, legacy?.createdAt || todayKey());
     })]);
-    if (legacyTasks.length) persistTasks(tasks.filter((task) => !task.sourceConsumableId));
+    if (legacyTasks.length) persistTasks(tasks.filter((task) => task.completed || !task.sourceConsumableId));
   }, [consumables, shoppingList, tasks, loading, persistShoppingList, persistTasks]);
 
   // Achievement-Check
   useEffect(() => {
     if (loading) return;
-    if (!initialized.current) { initialized.current = true; return; } // beim ersten Laden nicht feiern
     const unlockedIds = new Set(achievements.map((a) => a.id));
     const newly = [];
 
@@ -6414,8 +6438,7 @@ export default function LifeOS() {
     if (newly.length > 0) {
       persistAchievements([...achievements, ...newly.map((id) => ({ id, date: todayKey() }))]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalPoints, loading]);
+  }, [totalPoints, loading, allStats, activeHabits, entries, achievements, persistAchievements]);
 
   useEffect(() => {
     if (page === "coach" && !hasCoachKey) setPage("dashboard");
@@ -6534,6 +6557,10 @@ export default function LifeOS() {
               moods={moods}
               persistMoods={persistMoods}
               onOpenMood={() => setPage("mood")}
+              allStats={allStats}
+              statsByHabitId={statsByHabitId}
+              isMobile={isMobile}
+              currentDateKey={currentDateKey}
             />
           )}
           {page === "habits" && (
@@ -6543,15 +6570,17 @@ export default function LifeOS() {
               onOpenDetail={setDetailHabit}
               onEdit={(h) => { setModalHabit(h); setShowModal(true); }}
               onCreate={() => { setModalHabit(undefined); setShowModal(true); }}
+              statsByHabitId={statsByHabitId}
+              isMobile={isMobile}
             />
           )}
-          {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} persons={persons} />}
-          {page === "mood" && <MoodPage moods={moods} persistMoods={persistMoods} />}
+          {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} persons={persons} allStats={allStats} isMobile={isMobile} />}
+          {page === "mood" && <MoodPage moods={moods} persistMoods={persistMoods} currentDateKey={currentDateKey} />}
           {page === "consumables" && <ConsumablesPage consumables={consumables} persistConsumables={persistConsumables} shoppingList={shoppingList} persistShoppingList={persistShoppingList} />}
           {page === "shopping" && <ShoppingListPage shoppingList={shoppingList} persistShoppingList={persistShoppingList} consumables={consumables} persistConsumables={persistConsumables} />}
-          {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
-          {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} moods={moods} persistMoods={persistMoods} />}
-          {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} />}
+          {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} statsByHabitId={statsByHabitId} />}
+          {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} moods={moods} persistMoods={persistMoods} statsByHabitId={statsByHabitId} isMobile={isMobile} currentDateKey={currentDateKey} />}
+          {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} statsByHabitId={statsByHabitId} currentDateKey={currentDateKey} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} />}
           {page === "notes" && <NotesPage notes={notes} persistNotes={persistNotes} noteFolders={noteFolders} persistNoteFolders={persistNoteFolders} />}
