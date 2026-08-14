@@ -3552,7 +3552,7 @@ const rtfBtnStyle = {
   display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
 };
 
-function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, hasCoach }) {
+function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, hasCoach, moods, persistMoods }) {
   const isMobile = useIsMobile();
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [selectedDay, setSelectedDay] = useState(todayKey());
@@ -3751,6 +3751,13 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
       <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>
         {selectedDay === todayKey() ? "Heute" : longDate(selectedDay)}
       </div>
+
+      {moods && persistMoods && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, padding: 16, marginBottom: 16 }}>
+          <SectionLabel>Stimmung an diesem Tag</SectionLabel>
+          <MoodInput dateKey={selectedDay} moods={moods} persistMoods={persistMoods} compact />
+        </div>
+      )}
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, padding: 16, marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -6167,7 +6174,7 @@ export default function LifeOS() {
           {page === "consumables" && <ConsumablesPage consumables={consumables} persistConsumables={persistConsumables} shoppingList={shoppingList} persistShoppingList={persistShoppingList} />}
           {page === "shopping" && <ShoppingListPage shoppingList={shoppingList} persistShoppingList={persistShoppingList} consumables={consumables} persistConsumables={persistConsumables} />}
           {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} />}
-          {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} />}
+          {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} moods={moods} persistMoods={persistMoods} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} />}
