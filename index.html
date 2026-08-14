@@ -87,7 +87,7 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart
+  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, Cell, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -633,6 +633,8 @@ function useLifeOSData() {
   const [moods, setMoods] = useState({});
   const [consumables, setConsumables] = useState([]);
   const [shoppingList, setShoppingList] = useState([]);
+  const [notes, setNotes] = useState([]);
+  const [noteFolders, setNoteFolders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -644,7 +646,7 @@ function useLifeOSData() {
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const [h, e, a, c, j, w, g, t, p, cat, pg, moodData, consumableData, shoppingData] = await Promise.allSettled([
+      const [h, e, a, c, j, w, g, t, p, cat, pg, moodData, consumableData, shoppingData, noteData, noteFolderData] = await Promise.allSettled([
         window.storage.get("los-habits"),
         window.storage.get("los-entries"),
         window.storage.get("los-achievements"),
@@ -659,6 +661,8 @@ function useLifeOSData() {
         window.storage.get("los-moods"),
         window.storage.get("los-consumables"),
         window.storage.get("los-shopping-list"),
+        window.storage.get("los-notes"),
+        window.storage.get("los-note-folders"),
       ]);
       setHabits(readStoredJSON(h, []));
       setEntries(readStoredJSON(e, {}));
@@ -674,6 +678,8 @@ function useLifeOSData() {
       setMoods(readStoredJSON(moodData, {}));
       setConsumables(readStoredJSON(consumableData, []));
       setShoppingList(readStoredJSON(shoppingData, []));
+      setNotes(readStoredJSON(noteData, []));
+      setNoteFolders(readStoredJSON(noteFolderData, []));
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -746,10 +752,18 @@ function useLifeOSData() {
     setShoppingList(next);
     try { await window.storage.set("los-shopping-list", JSON.stringify(next)); } catch {}
   }, []);
+  const persistNotes = useCallback(async (next) => {
+    setNotes(next);
+    try { await window.storage.set("los-notes", JSON.stringify(next)); } catch {}
+  }, []);
+  const persistNoteFolders = useCallback(async (next) => {
+    setNoteFolders(next);
+    try { await window.storage.set("los-note-folders", JSON.stringify(next)); } catch {}
+  }, []);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders,
     refresh,
   };
 }
@@ -1617,7 +1631,7 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
 
   const handleClick = () => {
     if (habit.trackingType === "boolean") {
-      onToggle(habit.id, todayKey(), isDone ? undefined : true);
+      onToggle(habit.id, todayKey(), isDone || isFailed ? undefined : true);
     } else {
       onOpenDetail(habit);
     }
@@ -1699,7 +1713,7 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
         </div>
       )}
 
-      {habit.trackingType === "boolean" && (
+      {habit.trackingType === "boolean" && !isFailed && (
         <button onClick={handleFail} style={{
           width: 38, height: 38, borderRadius: "50%", flexShrink: 0, cursor: "pointer",
           border: isFailed ? "none" : `1.5px solid ${COLORS.border}`,
@@ -1713,12 +1727,12 @@ function HabitRow({ habit, entries, onToggle, onOpenDetail, onEdit, celebrateId 
 
       <button onClick={handleClick} style={{
         width: 38, height: 38, borderRadius: "50%", flexShrink: 0, cursor: "pointer",
-        border: isDone ? "none" : `1.5px solid ${COLORS.border}`,
-        background: isDone ? `linear-gradient(135deg, ${COLORS.mint}, #2DBE83)` : "transparent",
-        color: isDone ? "#0A1F14" : COLORS.textMuted,
+        border: isDone || isFailed ? "none" : `1.5px solid ${COLORS.border}`,
+        background: isDone ? `linear-gradient(135deg, ${COLORS.mint}, #2DBE83)` : isFailed ? `linear-gradient(135deg, ${COLORS.coral}, #E14D72)` : "transparent",
+        color: isDone ? "#0A1F14" : isFailed ? "#2B0810" : COLORS.textMuted,
         display: "flex", alignItems: "center", justifyContent: "center", transition: "all .15s",
       }}>
-        <Check size={18} strokeWidth={2.8} />
+        {isFailed ? <X size={18} strokeWidth={2.8} /> : <Check size={18} strokeWidth={2.8} />}
       </button>
 
       <IconButton onClick={() => onEdit(habit)} title="Bearbeiten"><Pencil size={14} /></IconButton>
@@ -5176,6 +5190,285 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
 }
 
 /* ============================================================
+   @section NOTES-PAGE — Notizen in Ordnern, Rich-Text-Inhalt (wiederverwendet RichTextEditor)
+   NOTIZEN
+   ============================================================ */
+const NO_FOLDER = "Ohne Ordner";
+
+function formatNoteTimestamp(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const isToday = toKey(d) === todayKey();
+  const datePart = isToday ? "Heute" : d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const timePart = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  return `${datePart}, ${timePart}`;
+}
+
+function NoteModal({ initial, folders, defaultFolder, onClose, onSave, onDelete }) {
+  const [title, setTitle] = useState(initial?.title || "");
+  const [folder, setFolder] = useState(initial?.folder || (defaultFolder && defaultFolder !== NO_FOLDER ? defaultFolder : ""));
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const editorRef = useRef(null);
+  const viewport = useVisualViewport();
+
+  useEffect(() => {
+    if (editorRef.current) editorRef.current.innerHTML = initial?.content || "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const canSave = title.trim().length > 0;
+
+  const handleSave = () => {
+    const html = editorRef.current ? editorRef.current.innerHTML : (initial?.content || "");
+    const now = new Date().toISOString();
+    onSave({
+      id: initial?.id || `note_${Date.now()}`,
+      title: title.trim(),
+      folder: folder || "",
+      content: html,
+      createdAt: initial?.createdAt || now,
+      updatedAt: now,
+    });
+  };
+
+  return (
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
+      <div style={{ ...modalStyle, maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+      <div style={modalBodyStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>
+            {initial ? "Notiz bearbeiten" : "Neue Notiz"}
+          </h2>
+          <IconButton onClick={onClose}><X size={16} /></IconButton>
+        </div>
+
+        <label style={labelStyle}>Titel</label>
+        <input style={inputStyle} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="z. B. Ideen, Einkaufsliste, Rezept …" autoFocus />
+
+        <label style={labelStyle}>Ordner</label>
+        <select value={folder} onChange={(e) => setFolder(e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
+          <option value="">{NO_FOLDER}</option>
+          {(folders || []).map((f) => <option key={f} value={f}>{f}</option>)}
+        </select>
+
+        <label style={labelStyle}>Inhalt</label>
+        <RichTextEditor editorRef={editorRef} />
+
+        {initial?.updatedAt && (
+          <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 10 }}>Zuletzt geändert: {formatNoteTimestamp(initial.updatedAt)}</div>
+        )}
+      </div>
+
+        <div style={modalFooterStyle}>
+          {initial ? (
+            <button onClick={() => (confirmDelete ? onDelete(initial.id) : setConfirmDelete(true))} style={{
+              ...ghostBtn, color: COLORS.coral, display: "flex", alignItems: "center", gap: 6,
+              border: `1px solid ${confirmDelete ? COLORS.coral : COLORS.border}`,
+              background: confirmDelete ? COLORS.coral + "1f" : "transparent",
+            }}>
+              <Trash2 size={14} /> {confirmDelete ? "Wirklich löschen?" : "Löschen"}
+            </button>
+          ) : <span />}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={onClose} style={ghostBtn}>Abbrechen</button>
+            <button disabled={!canSave} onClick={handleSave} style={{ ...primaryBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}>
+              Speichern
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NoteRow({ note, onEdit }) {
+  const preview = stripHtml(note.content).slice(0, 140);
+  return (
+    <div onClick={onEdit} style={{
+      display: "flex", flexDirection: "column", gap: 4, padding: "13px 15px", cursor: "pointer",
+      background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <span style={{ fontWeight: 600, fontSize: 14.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{note.title}</span>
+        <span style={{ fontSize: 10.5, color: COLORS.textFaint, flexShrink: 0 }}>{formatNoteTimestamp(note.updatedAt || note.createdAt)}</span>
+      </div>
+      {preview && <div style={{ fontSize: 12.5, color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{preview}</div>}
+    </div>
+  );
+}
+
+function NotesPage({ notes, persistNotes, noteFolders, persistNoteFolders }) {
+  const [showModal, setShowModal] = useState(false);
+  const [modalNote, setModalNote] = useState(undefined);
+  const [activeFolder, setActiveFolder] = useState("all");
+  const [addingFolder, setAddingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [renamingFolder, setRenamingFolder] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState(false);
+
+  const notesList = notes || [];
+  const folders = noteFolders || [];
+
+  const counts = useMemo(() => {
+    const map = {};
+    notesList.forEach((n) => { const f = n.folder || NO_FOLDER; map[f] = (map[f] || 0) + 1; });
+    return map;
+  }, [notesList]);
+
+  const filtered = useMemo(() => {
+    let list = notesList;
+    if (activeFolder !== "all") {
+      const wanted = activeFolder === NO_FOLDER ? "" : activeFolder;
+      list = list.filter((n) => (n.folder || "") === wanted);
+    }
+    return [...list].sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""));
+  }, [notesList, activeFolder]);
+
+  const addFolder = () => {
+    const trimmed = newFolderName.trim();
+    setAddingFolder(false);
+    setNewFolderName("");
+    if (!trimmed || folders.includes(trimmed)) return;
+    persistNoteFolders([...folders, trimmed]);
+    setActiveFolder(trimmed);
+  };
+
+  const startRename = () => {
+    setRenameValue(activeFolder);
+    setRenamingFolder(true);
+  };
+
+  const confirmRename = () => {
+    const trimmed = renameValue.trim();
+    setRenamingFolder(false);
+    if (!trimmed || trimmed === activeFolder || folders.includes(trimmed)) return;
+    persistNoteFolders(folders.map((f) => (f === activeFolder ? trimmed : f)));
+    persistNotes(notesList.map((n) => (n.folder === activeFolder ? { ...n, folder: trimmed } : n)));
+    setActiveFolder(trimmed);
+  };
+
+  const deleteFolder = () => {
+    if (!confirmDeleteFolder) { setConfirmDeleteFolder(true); return; }
+    persistNoteFolders(folders.filter((f) => f !== activeFolder));
+    persistNotes(notesList.map((n) => (n.folder === activeFolder ? { ...n, folder: "" } : n)));
+    setActiveFolder("all");
+    setConfirmDeleteFolder(false);
+  };
+
+  const handleSave = (note) => {
+    const exists = notesList.some((n) => n.id === note.id);
+    const next = exists ? notesList.map((n) => (n.id === note.id ? note : n)) : [...notesList, note];
+    persistNotes(next);
+    setShowModal(false);
+    setModalNote(undefined);
+  };
+
+  const handleDelete = (id) => {
+    persistNotes(notesList.filter((n) => n.id !== id));
+    setShowModal(false);
+    setModalNote(undefined);
+  };
+
+  const folderChips = ["all", ...folders, ...(counts[NO_FOLDER] ? [NO_FOLDER] : [])];
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
+        <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Notizen</h1>
+        <button onClick={() => { setModalNote(undefined); setShowModal(true); }} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 6 }}>
+          <Plus size={15} /> Neue Notiz
+        </button>
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+        {folderChips.map((f) => {
+          const active = activeFolder === f;
+          const label = f === "all" ? "Alle" : f;
+          return (
+            <button key={f} onClick={() => { setActiveFolder(f); setRenamingFolder(false); setConfirmDeleteFolder(false); }} style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 9, cursor: "pointer", fontSize: 12.5,
+              border: `1px solid ${active ? COLORS.violet : COLORS.border}`,
+              color: active ? COLORS.text : COLORS.textMuted, background: active ? COLORS.violet + "1f" : "transparent",
+            }}>
+              <Folder size={12} /> {label}
+              <span style={{ fontSize: 10.5, color: COLORS.textFaint }}>{f === "all" ? notesList.length : (counts[f] || 0)}</span>
+            </button>
+          );
+        })}
+        {addingFolder ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              autoFocus style={{ ...inputStyle, marginBottom: 0, width: 150, padding: "7px 10px" }}
+              value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addFolder(); if (e.key === "Escape") { setAddingFolder(false); setNewFolderName(""); } }}
+              placeholder="Ordnername"
+            />
+            <button type="button" onClick={addFolder} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5 }}>OK</button>
+            <button type="button" onClick={() => { setAddingFolder(false); setNewFolderName(""); }} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5 }}>Abbrechen</button>
+          </div>
+        ) : (
+          <button onClick={() => setAddingFolder(true)} style={{ ...ghostBtn, padding: "7px 12px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
+            <Plus size={12} /> Ordner
+          </button>
+        )}
+      </div>
+
+      {activeFolder !== "all" && activeFolder !== NO_FOLDER && folders.includes(activeFolder) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18 }}>
+          {renamingFolder ? (
+            <>
+              <input
+                autoFocus style={{ ...inputStyle, marginBottom: 0, width: 180, padding: "7px 10px" }}
+                value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") confirmRename(); if (e.key === "Escape") setRenamingFolder(false); }}
+              />
+              <button onClick={confirmRename} style={{ ...ghostBtn, padding: "6px 10px", fontSize: 11.5 }}>Speichern</button>
+              <button onClick={() => setRenamingFolder(false)} style={{ ...ghostBtn, padding: "6px 10px", fontSize: 11.5 }}>Abbrechen</button>
+            </>
+          ) : (
+            <>
+              <IconButton onClick={startRename} title="Ordner umbenennen"><Pencil size={13} /></IconButton>
+              <IconButton onClick={deleteFolder} title="Ordner löschen" danger><Trash2 size={13} /></IconButton>
+              {confirmDeleteFolder && <span style={{ fontSize: 11.5, color: COLORS.coral }}>Nochmal klicken zum Löschen (Notizen bleiben erhalten)</span>}
+            </>
+          )}
+        </div>
+      )}
+
+      {filtered.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "48px 20px", border: `1px dashed ${COLORS.border}`, borderRadius: 16, color: COLORS.textMuted }}>
+          <FileText size={28} style={{ color: COLORS.violet, marginBottom: 10 }} />
+          <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.text, marginBottom: 4 }}>
+            {notesList.length === 0 ? "Noch keine Notizen" : "Keine Notizen in diesem Ordner"}
+          </div>
+          <div style={{ fontSize: 13, marginBottom: 16 }}>Halte Ideen, Listen oder Gedanken fest und organisiere sie in Ordnern.</div>
+          <button onClick={() => { setModalNote(undefined); setShowModal(true); }} style={primaryBtn}>Erste Notiz anlegen</button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {filtered.map((n) => (
+            <NoteRow key={n.id} note={n} onEdit={() => { setModalNote(n); setShowModal(true); }} />
+          ))}
+        </div>
+      )}
+
+      {showModal && (
+        <NoteModal
+          initial={modalNote}
+          folders={folders}
+          defaultFolder={activeFolder}
+          onClose={() => { setShowModal(false); setModalNote(undefined); }}
+          onSave={handleSave}
+          onDelete={handleDelete}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    @section SETTINGS-PAGE — Export/Import (JSON), Kategorie-Verwaltung, Supabase/Anthropic-Key (ConnectionSettings)
    EINSTELLUNGEN / DATENSICHERUNG
    Export als JSON-Download, Import mit Vorschau + Bestätigung
@@ -5205,8 +5498,8 @@ function downloadJSON(filename, obj) {
 }
 
 function SettingsPage({
-  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList,
-  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList,
+  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders,
+  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders,
   onAnthropicKeyChange,
 }) {
   const fileInputRef = useRef(null);
@@ -5217,7 +5510,7 @@ function SettingsPage({
   const handleExport = () => {
     const payload = {
       app: "life-os", version: 1, exportedAt: new Date().toISOString(),
-      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList },
+      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders },
     };
     downloadJSON(`life-os-backup-${todayKey()}.json`, payload);
   };
@@ -5326,6 +5619,12 @@ function SettingsPage({
       Artikel: entry.name, Erledigt: entry.completed ? "Ja" : "Nein", "Erledigt am": entry.completedAt || "",
     }));
 
+    const notesSheet = (notes || []).map((n) => ({
+      Titel: n.title, Ordner: n.folder || NO_FOLDER, Inhalt: stripHtml(n.content),
+      Erstellt: n.createdAt ? new Date(n.createdAt).toLocaleString("de-DE") : "",
+      "Zuletzt geändert": n.updatedAt ? new Date(n.updatedAt).toLocaleString("de-DE") : "",
+    }));
+
     addSheet("Habits", habitsSheet);
     addSheet("Habit-Einträge", entriesSheet);
     addSheet("Aufgaben", tasksSheet);
@@ -5339,6 +5638,7 @@ function SettingsPage({
     addSheet("Wochenberichte", weeklyReportsSheet);
     addSheet("Vorräte", consumablesSheet);
     addSheet("Einkaufsliste", shoppingSheet);
+    addSheet("Notizen", notesSheet);
 
     XLSX.writeFile(wb, `lifetracker-export-${todayKey()}.xlsx`);
   };
@@ -5382,6 +5682,8 @@ function SettingsPage({
     await persistMoods(pendingImport.moods && typeof pendingImport.moods === "object" ? pendingImport.moods : {});
     await persistConsumables(Array.isArray(pendingImport.consumables) ? pendingImport.consumables : []);
     await persistShoppingList(Array.isArray(pendingImport.shoppingList) ? pendingImport.shoppingList : []);
+    await persistNotes(Array.isArray(pendingImport.notes) ? pendingImport.notes : []);
+    await persistNoteFolders(Array.isArray(pendingImport.noteFolders) ? pendingImport.noteFolders : []);
     setPendingImport(null);
     setImportSuccess(true);
     setTimeout(() => setImportSuccess(false), 4000);
@@ -5876,6 +6178,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
     { key: "goals", label: "Goals", Icon: Target },
     { key: "persons", label: "Personen", Icon: Users },
     { key: "journal", label: "Journal", Icon: BookOpen },
+    { key: "notes", label: "Notizen", Icon: FileText },
     ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
     { key: "settings", label: "Einstellungen", Icon: Settings },
   ];
@@ -5936,6 +6239,7 @@ function BottomNav({ page, setPage, hasCoach }) {
     { key: "goals", label: "Goals", Icon: Target },
     { key: "persons", label: "Personen", Icon: Users },
     { key: "journal", label: "Journal", Icon: BookOpen },
+    { key: "notes", label: "Notizen", Icon: FileText },
     ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
     { key: "settings", label: "Settings", Icon: Settings },
   ];
@@ -6009,8 +6313,8 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
    ============================================================ */
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders,
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
@@ -6222,13 +6526,14 @@ export default function LifeOS() {
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} />}
+          {page === "notes" && <NotesPage notes={notes} persistNotes={persistNotes} noteFolders={noteFolders} persistNoteFolders={persistNoteFolders} />}
           {page === "settings" && (
             <SettingsPage
               habits={habits} entries={entries} achievements={achievements} coach={coach}
-              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList}
+              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList} notes={notes} noteFolders={noteFolders}
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
               persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
-              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables} persistShoppingList={persistShoppingList}
+              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables} persistShoppingList={persistShoppingList} persistNotes={persistNotes} persistNoteFolders={persistNoteFolders}
               onAnthropicKeyChange={refreshCoachKey}
             />
           )}
