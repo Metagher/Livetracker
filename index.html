@@ -4345,6 +4345,52 @@ function consumableAverageDays(item) {
   });
   return durations.length ? Math.round(durations.reduce((sum, days) => sum + days, 0) / durations.length) : null;
 }
+function ConsumableHistoryModal({ item, onClose, onUpdate, onDelete }) {
+  const viewport = useVisualViewport();
+  const [editingIndex, setEditingIndex] = useState(null);
+  const [editDate, setEditDate] = useState("");
+  const [editAvailable, setEditAvailable] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const entries = (item.history || [])
+    .map((event, index) => ({ ...event, index }))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.index - a.index);
+  const startEdit = (entry) => {
+    setEditingIndex(entry.index); setEditDate(entry.date); setEditAvailable(entry.available); setConfirmDelete(null);
+  };
+  const saveEdit = () => {
+    if (!isValidDateKey(editDate) || editDate > todayKey()) return;
+    onUpdate(editingIndex, { date: editDate, available: editAvailable }); setEditingIndex(null);
+  };
+  return (
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
+      <div style={{ ...modalStyle, maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+        <div style={modalBodyStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+            <div style={{ flex: 1 }}><h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, margin: 0 }}>Verlauf bearbeiten</h2><div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 3 }}>{item.name}</div></div>
+            <IconButton onClick={onClose} title="Schließen"><X size={16} /></IconButton>
+          </div>
+          {entries.length === 0 ? <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Keine Einträge vorhanden.</div> : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {entries.map((entry) => <div key={entry.index} style={{ padding: "9px 10px", borderRadius: 10, background: COLORS.bgSoft }}>
+                {editingIndex === entry.index ? <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
+                  <input type="date" max={todayKey()} value={editDate} onChange={(e) => setEditDate(e.target.value)} style={{ ...inputStyle, width: "auto", flex: "1 1 145px", marginBottom: 0 }} />
+                  <select value={editAvailable ? "available" : "unavailable"} onChange={(e) => setEditAvailable(e.target.value === "available")} style={{ ...inputStyle, width: "auto", flex: "1 1 150px", marginBottom: 0, cursor: "pointer" }}><option value="available">Vorhanden</option><option value="unavailable">Nicht vorhanden</option></select>
+                  <button onClick={saveEdit} disabled={!isValidDateKey(editDate) || editDate > todayKey()} style={{ ...primaryBtn, padding: "8px 11px", opacity: !isValidDateKey(editDate) || editDate > todayKey() ? 0.5 : 1 }}>Speichern</button>
+                  <button onClick={() => setEditingIndex(null)} style={{ ...ghostBtn, padding: "8px 11px" }}>Abbrechen</button>
+                </div> : <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12.5, fontWeight: 600 }}>{longDate(entry.date)}</div><div style={{ fontSize: 11, color: entry.available ? COLORS.mint : COLORS.coral }}>{entry.available ? "Vorhanden / aufgefüllt" : "Nicht vorhanden / verbraucht"}</div></div>
+                  <IconButton onClick={() => startEdit(entry)} title="Eintrag bearbeiten"><Pencil size={13} /></IconButton>
+                  {confirmDelete === entry.index ? <div style={{ display: "flex", gap: 5 }}><button onClick={() => setConfirmDelete(null)} style={{ ...ghostBtn, padding: "6px 8px", fontSize: 11 }}>Abbrechen</button><button onClick={() => { onDelete(entry.index); setConfirmDelete(null); }} style={{ ...ghostBtn, padding: "6px 8px", fontSize: 11, color: COLORS.coral, borderColor: COLORS.coral }}>Löschen</button></div> : <IconButton onClick={() => { setConfirmDelete(entry.index); setEditingIndex(null); }} title="Eintrag löschen" danger><Trash2 size={13} /></IconButton>}
+                </div>}
+              </div>)}
+            </div>
+          )}
+        </div>
+        <div style={modalFooterStyle}><span /><button onClick={onClose} style={ghostBtn}>Schließen</button></div>
+      </div>
+    </div>
+  );
+}
 function createConsumablePurchaseTask(area, item) {
   return { id: `task_consumable_${item.id}_${Date.now()}`, title: `${item.name} neu beschaffen`, content: `Bestand im Bereich „${area.name}“ auffüllen.`, category: "Einkauf", points: 1, dueDate: null, completed: false, completedAt: null, createdAt: todayKey(), sourceConsumableId: item.id };
 }
@@ -4352,6 +4398,7 @@ function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks 
   const [newArea, setNewArea] = useState("");
   const [productNames, setProductNames] = useState({});
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [historyTarget, setHistoryTarget] = useState(null);
   const addArea = () => {
     const name = newArea.trim(); if (!name) return;
     persistConsumables([...consumables, { id: `area_${Date.now()}`, name, items: [], createdAt: todayKey() }]); setNewArea("");
@@ -4380,6 +4427,22 @@ function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks 
     persistConsumables(consumables.filter((area) => area.id !== areaId));
     persistTasks(tasks.filter((task) => !itemIds.has(task.sourceConsumableId))); setConfirmDelete(null);
   };
+  const changeHistory = (areaId, itemId, change) => {
+    const area = consumables.find((candidate) => candidate.id === areaId);
+    const previousItem = area?.items?.find((item) => item.id === itemId);
+    if (!area || !previousItem) return;
+    const history = change([...(previousItem.history || [])]);
+    const latest = history.filter((event) => isValidDateKey(event.date)).slice().sort((a, b) => a.date.localeCompare(b.date)).at(-1);
+    const available = latest ? latest.available : previousItem.available;
+    persistConsumables(consumables.map((candidate) => candidate.id === areaId ? { ...candidate, items: (candidate.items || []).map((item) => item.id === itemId ? { ...item, history, available } : item) } : candidate));
+    if (available !== previousItem.available) {
+      if (!available) {
+        const hasOpenTask = tasks.some((task) => task.sourceConsumableId === itemId && !task.completed);
+        if (!hasOpenTask) persistTasks([...tasks, createConsumablePurchaseTask(area, previousItem)]);
+      } else persistTasks(tasks.map((task) => task.sourceConsumableId === itemId && !task.completed ? { ...task, completed: true, completedAt: todayKey() } : task));
+    }
+  };
+  const currentHistoryItem = historyTarget ? consumables.find((area) => area.id === historyTarget.areaId)?.items?.find((item) => item.id === historyTarget.itemId) : null;
   return <div>
     <div style={{ marginBottom: 20 }}><h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Verbrauchsartikel</h1><div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Bestände nach Bereichen verwalten und rechtzeitig nachkaufen.</div></div>
     <div style={{ display: "flex", gap: 8, marginBottom: 20 }}><input value={newArea} onChange={(e) => setNewArea(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addArea()} placeholder="Neuer Bereich, z. B. Sporttasche" style={{ ...inputStyle, marginBottom: 0 }} /><button onClick={addArea} style={primaryBtn}><Plus size={14} /> Bereich</button></div>
@@ -4391,16 +4454,22 @@ function ConsumablesPage({ consumables, persistConsumables, tasks, persistTasks 
           const avg = consumableAverageDays(item); return <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 11px", background: COLORS.bgSoft, borderRadius: 10 }}>
             <button onClick={() => toggleProduct(area, item)} style={{ width: 30, height: 30, borderRadius: "50%", border: `1px solid ${item.available ? COLORS.mint : COLORS.coral}`, background: item.available ? COLORS.mint + "22" : COLORS.coral + "22", color: item.available ? COLORS.mint : COLORS.coral, cursor: "pointer" }}>{item.available ? <Check size={15} /> : <X size={15} />}</button>
             <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 13.5, fontWeight: 600 }}>{item.name}</div><div style={{ fontSize: 11, color: COLORS.textFaint }}>{item.available ? "Vorhanden" : "Nicht vorhanden · Beschaffungs-Task erstellt"} · Ø Haltbarkeit: {avg === null ? "noch nicht berechenbar" : `${avg} Tage`}</div></div>
+            <IconButton onClick={() => setHistoryTarget({ areaId: area.id, itemId: item.id })} title="Verlauf bearbeiten"><CalendarDays size={13} /></IconButton>
             {confirmDelete === item.id ? <button onClick={() => deleteProduct(area.id, item.id)} style={{ ...ghostBtn, padding: "5px 8px", color: COLORS.coral }}>Löschen?</button> : <IconButton onClick={() => setConfirmDelete(item.id)} title="Produkt löschen" danger><Trash2 size={13} /></IconButton>}
           </div>;
         })}</div>}
       </div>)}
     </div>}
+    {currentHistoryItem && <ConsumableHistoryModal item={currentHistoryItem} onClose={() => setHistoryTarget(null)} onUpdate={(index, event) => changeHistory(historyTarget.areaId, historyTarget.itemId, (history) => history.map((entry, entryIndex) => entryIndex === index ? event : entry))} onDelete={(index) => changeHistory(historyTarget.areaId, historyTarget.itemId, (history) => history.filter((_, entryIndex) => entryIndex !== index))} />}
   </div>;
 }
 
 /* ============================================================
    @section MOOD-PAGE — tägliches Fitness- und Stimmungsgefühl
+   Wie bei Habits gibt es eine Erfassungs-Streak (Tage in Folge mit Eintrag,
+   "heute" bricht sie noch nicht) und eine kleine Konfetti-Belohnung, wenn
+   ein Tag komplett (Fitness + Stimmung) erfasst wird - damit sich das
+   Eintragen genauso lohnend anfühlt wie beim Rest der App.
    ============================================================ */
 const MOOD_SCALE = [
   { value: 1, label: "Sehr niedrig", emoji: "😞" }, { value: 2, label: "Niedrig", emoji: "😕" },
@@ -4409,18 +4478,61 @@ const MOOD_SCALE = [
 function overallMood(entry) {
   return entry?.fitness && entry?.mood ? Math.round(((entry.fitness + entry.mood) / 2) * 10) / 10 : null;
 }
-function MoodInput({ dateKey, moods, persistMoods, compact = false }) {
+function moodEmojiFor(value) {
+  if (value === null || value === undefined) return "✨";
+  const rounded = Math.min(5, Math.max(1, Math.round(value)));
+  return (MOOD_SCALE.find((m) => m.value === rounded) || {}).emoji || "✨";
+}
+function moodColorFor(value) {
+  if (value === null) return COLORS.textFaint;
+  if (value >= 4) return COLORS.mint;
+  if (value < 2.5) return COLORS.coral;
+  return COLORS.ember2;
+}
+// Tage in Folge mit vollständigem Eintrag (Fitness + Stimmung), analog zur
+// Habit-Streak: "heute" bricht die Streak noch nicht, solange sie offen ist.
+function moodLoggingStreak(moods) {
+  let streak = 0;
+  let cursor = new Date();
+  if (overallMood(moods[toKey(cursor)]) === null) cursor = addDays(cursor, -1);
+  while (overallMood(moods[toKey(cursor)]) !== null) {
+    streak += 1;
+    cursor = addDays(cursor, -1);
+  }
+  return streak;
+}
+function moodAverage(moods, dateKeys) {
+  const values = dateKeys.map((k) => overallMood(moods[k])).filter((v) => v !== null);
+  if (values.length === 0) return null;
+  return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
+}
+
+function MoodInput({ dateKey, moods, persistMoods, compact = false, onComplete }) {
   const entry = moods[dateKey] || {};
-  const saveValue = (field, value) => persistMoods({ ...moods, [dateKey]: { ...entry, [field]: value } });
+  const saveValue = (field, value) => {
+    const wasComplete = overallMood(entry) !== null;
+    const nextEntry = { ...entry, [field]: value };
+    persistMoods({ ...moods, [dateKey]: nextEntry });
+    if (!wasComplete && overallMood(nextEntry) !== null) onComplete?.();
+  };
   const total = overallMood(entry);
+  const totalColor = moodColorFor(total);
   const scale = (field, title, color) => <div style={{ flex: "1 1 260px" }}>
     <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>{title}</div>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
-      {MOOD_SCALE.map((item) => <button key={item.value} title={item.label} onClick={() => saveValue(field, item.value)} style={{
-        padding: compact ? "7px 2px" : "9px 3px", borderRadius: 9, cursor: "pointer", fontSize: compact ? 17 : 20,
-        border: `1px solid ${entry[field] === item.value ? color : COLORS.border}`,
-        background: entry[field] === item.value ? color + "22" : COLORS.bgSoft,
-      }}>{item.emoji}<span style={{ display: "block", fontSize: 9.5, color: COLORS.textFaint, marginTop: 3 }}>{item.value}</span></button>)}
+      {MOOD_SCALE.map((item) => {
+        const active = entry[field] === item.value;
+        return (
+          <button key={item.value} title={item.label} onClick={() => saveValue(field, item.value)} style={{
+            padding: compact ? "8px 2px" : "10px 3px", borderRadius: 10, cursor: "pointer", fontSize: compact ? 19 : 22,
+            border: `1.5px solid ${active ? color : COLORS.border}`,
+            background: active ? color + "22" : COLORS.bgSoft,
+            boxShadow: active ? `0 0 14px ${color}55` : "none",
+            transform: active ? "scale(1.06)" : "scale(1)",
+            transition: "all .15s",
+          }}>{item.emoji}<span style={{ display: "block", fontSize: 9.5, fontWeight: active ? 700 : 500, color: active ? color : COLORS.textFaint, marginTop: 3 }}>{item.value}</span></button>
+        );
+      })}
     </div>
   </div>;
   return <div>
@@ -4428,24 +4540,85 @@ function MoodInput({ dateKey, moods, persistMoods, compact = false }) {
       {scale("fitness", "A. Wie fit fühlst du dich?", COLORS.mint)}
       {scale("mood", "B. Wie ist deine Stimmung?", COLORS.violet)}
     </div>
-    <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: COLORS.bgSoft, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-      <span style={{ fontSize: 12, color: COLORS.textMuted }}>Gesamtstimmung</span>
-      <strong style={{ fontFamily: "Fraunces, serif", fontSize: 20, color: total === null ? COLORS.textFaint : total >= 4 ? COLORS.mint : total < 2.5 ? COLORS.coral : COLORS.ember2 }}>{total === null ? "–" : `${total} / 5`}</strong>
+    <div style={{
+      marginTop: 12, padding: "10px 14px", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center",
+      background: total === null ? COLORS.bgSoft : totalColor + "14", border: `1px solid ${total === null ? COLORS.borderSoft : totalColor + "44"}`,
+    }}>
+      <span style={{ fontSize: 12, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ fontSize: 16 }}>{moodEmojiFor(total)}</span> Gesamtstimmung
+      </span>
+      <strong style={{ fontFamily: "Fraunces, serif", fontSize: 20, color: totalColor }}>{total === null ? "–" : `${total} / 5`}</strong>
     </div>
   </div>;
 }
+
 function MoodPage({ moods, persistMoods }) {
   const [selectedDate, setSelectedDate] = useState(todayKey());
+  const [celebrate, setCelebrate] = useState(false);
   const series = useMemo(() => Object.keys(moods).sort().slice(-60).map((date) => ({ date: shortDate(date), fitness: moods[date].fitness || null, mood: moods[date].mood || null, overall: overallMood(moods[date]) })), [moods]);
+
+  const streak = useMemo(() => moodLoggingStreak(moods), [moods]);
+  const weekKeys = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(startOfWeek(new Date()), i))), []);
+  const lastWeekKeys = useMemo(() => weekKeys.map((k) => toKey(addDays(keyToDate(k), -7))), [weekKeys]);
+  const weekAvg = moodAverage(moods, weekKeys);
+  const lastWeekAvg = moodAverage(moods, lastWeekKeys);
+  const monthAvg = useMemo(() => {
+    const prefix = todayKey().slice(0, 7);
+    return moodAverage(moods, Object.keys(moods).filter((k) => k.startsWith(prefix)));
+  }, [moods]);
+  const bestDay = useMemo(() => {
+    const prefix = todayKey().slice(0, 7);
+    const entries = Object.keys(moods).filter((k) => k.startsWith(prefix)).map((k) => ({ date: k, value: overallMood(moods[k]) })).filter((e) => e.value !== null);
+    return entries.length ? entries.reduce((best, e) => (e.value > best.value ? e : best)) : null;
+  }, [moods]);
+
+  const todayOverall = overallMood(moods[todayKey()]);
+  const heroEmoji = moodEmojiFor(todayOverall);
+  const heroLine = todayOverall !== null
+    ? `Heute fühlst du dich bei ${todayOverall} / 5 - ${todayOverall >= 4 ? "richtig gut, schön zu sehen!" : todayOverall < 2.5 ? "sei heute besonders gut zu dir." : "so lala, das ist völlig okay."}`
+    : weekAvg !== null && lastWeekAvg !== null && weekAvg !== lastWeekAvg
+      ? (weekAvg > lastWeekAvg ? "Aufwärtstrend gegenüber letzter Woche 📈 - trag auch heute ein." : "Etwas gedrückter als letzte Woche - trag ein, wie es dir heute geht.")
+      : "Noch nichts für heute erfasst - wie fühlst du dich gerade?";
+
   return <div>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
       <div><h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Stimmung</h1><div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Körperliches Gefühl und Stimmung getrennt erfassen.</div></div>
       <input type="date" max={todayKey()} value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} style={{ ...inputStyle, width: "auto", marginBottom: 0 }} />
     </div>
-    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}><SectionLabel>{selectedDate === todayKey() ? "Heute" : longDate(selectedDate)}</SectionLabel><MoodInput dateKey={selectedDate} moods={moods} persistMoods={persistMoods} /></div>
+
+    <div style={{
+      position: "relative", display: "flex", alignItems: "center", gap: 14, marginBottom: 16, padding: "14px 16px", borderRadius: 14,
+      background: `linear-gradient(135deg, ${COLORS.violet}14, ${COLORS.mint}0a)`, border: `1px solid ${COLORS.violet}33`, overflow: "hidden",
+    }}>
+      {celebrate && <Confetti trigger={"mood_" + Date.now()} />}
+      <div style={{ fontSize: 38, lineHeight: 1, flexShrink: 0 }}>{heroEmoji}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{heroLine}</div>
+        {streak > 0 && (
+          <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+            <Flame size={12} style={{ color: COLORS.ember1 }} /> {streak} {streak === 1 ? "Tag" : "Tage"} in Folge erfasst
+          </div>
+        )}
+      </div>
+    </div>
+
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 16 }}>
+      <StatCard label="Erfassungs-Streak" value={streak} suffix={streak === 1 ? "Tag" : "Tage"} accent={COLORS.ember2} />
+      <StatCard label="Ø diese Woche" value={weekAvg ?? "–"} suffix={weekAvg === null ? "" : "/ 5"} accent={moodColorFor(weekAvg)} />
+      <StatCard label="Ø diesen Monat" value={monthAvg ?? "–"} suffix={monthAvg === null ? "" : "/ 5"} accent={moodColorFor(monthAvg)} />
+      <StatCard label="Bester Tag (Monat)" value={bestDay ? bestDay.value : "–"} suffix={bestDay ? `· ${shortDate(bestDay.date)}` : ""} accent={COLORS.mint} />
+    </div>
+
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+      <SectionLabel>{selectedDate === todayKey() ? "Heute" : longDate(selectedDate)}</SectionLabel>
+      <MoodInput
+        dateKey={selectedDate} moods={moods} persistMoods={persistMoods}
+        onComplete={selectedDate === todayKey() ? () => { setCelebrate(true); setTimeout(() => setCelebrate(false), 1200); } : undefined}
+      />
+    </div>
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18 }}>
       <SectionLabel>Stimmungsverlauf</SectionLabel>
-      {series.length === 0 ? <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Stimmung eingetragen.</div> : <ResponsiveContainer width="100%" height={240}><LineChart data={series}><CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} /><XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} minTickGap={24} /><YAxis domain={[1, 5]} ticks={[1,2,3,4,5]} tick={{ fill: COLORS.textFaint, fontSize: 10 }} /><Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8 }} /><Line type="monotone" dataKey="fitness" name="Fitness" stroke={COLORS.mint} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="mood" name="Stimmung" stroke={COLORS.violet} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="overall" name="Gesamt" stroke={COLORS.ember2} strokeWidth={3} connectNulls /></LineChart></ResponsiveContainer>}
+      {series.length === 0 ? <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Stimmung eingetragen.</div> : <ResponsiveContainer width="100%" height={240}><LineChart data={series}><CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} /><XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} minTickGap={24} /><YAxis domain={[1, 5]} ticks={[1,2,3,4,5]} tick={{ fill: COLORS.textFaint, fontSize: 10 }} /><Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8 }} /><Line type="monotone" dataKey="fitness" name="Fitness" stroke={COLORS.mint} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="mood" name="Stimmung" stroke={COLORS.violet} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="overall" name="Gesamt" stroke={COLORS.ember2} strokeWidth={3} dot={{ r: 3, fill: COLORS.ember2 }} connectNulls /></LineChart></ResponsiveContainer>}
     </div>
   </div>;
 }
