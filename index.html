@@ -4857,7 +4857,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
         <div style={{ textAlign: "center", padding: "48px 20px", border: `1px dashed ${COLORS.border}`, borderRadius: 16, color: COLORS.textMuted }}>
           <Users size={28} style={{ color: COLORS.violet, marginBottom: 10 }} />
           <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.text, marginBottom: 4 }}>Noch keine Personen</div>
-          <div style={{ fontSize: 13, marginBottom: 16 }}>Leg Personen an und halte fest, wann ihr euch trefft - ein Klick auf die Person zählt ein Treffen.</div>
+          <div style={{ fontSize: 13, marginBottom: 16 }}>Leg Personen an und halte über die Treffen-Schaltfläche fest, wann ihr euch seht.</div>
           <button onClick={() => { setModalPerson(undefined); setShowModal(true); }} style={primaryBtn}>Erste Person anlegen</button>
         </div>
       ) : (
@@ -4892,8 +4892,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
           initial={modalPerson}
           groups={personGroups}
           onAddGroup={onAddPersonGroup}
-          persons={networkPersons}
-          title={networkGroup ? `Verbindungen · ${networkGroup}` : "Verbindungen"}
+          persons={persons}
           onAddRelationship={addRelationship}
           onRemoveRelationship={removeRelationship}
           onClose={() => { setShowModal(false); setModalPerson(undefined); }}
@@ -4904,9 +4903,10 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
 
       {showNetwork && (
         <PersonNetworkView
-          persons={persons}
-          onClose={() => setShowNetwork(false)}
-          onEditPerson={(p) => { setShowNetwork(false); setModalPerson(p); setShowModal(true); }}
+          persons={networkPersons}
+          title={networkGroup ? `Verbindungen · ${networkGroup}` : "Verbindungen"}
+          onClose={() => { setShowNetwork(false); setNetworkGroup(null); }}
+          onEditPerson={(p) => { setShowNetwork(false); setNetworkGroup(null); setModalPerson(p); setShowModal(true); }}
         />
       )}
     </div>
@@ -4921,11 +4921,11 @@ function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting
   return (
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, overflow: "hidden" }}>
       <div
-        onClick={() => person.meetingTrackingEnabled !== false && onLogMeeting(todayKey())}
-        title={person.meetingTrackingEnabled === false ? "Treffen-Zählung deaktiviert" : "Klicken, um ein Treffen für heute zu zählen"}
+        onClick={onEdit}
+        title="Person bearbeiten"
         style={{
           display: "flex", alignItems: "center", gap: 14, padding: "14px 16px",
-          position: "relative", overflow: "hidden", cursor: person.meetingTrackingEnabled === false ? "default" : "pointer",
+          position: "relative", overflow: "hidden", cursor: "pointer",
         }}
       >
       {celebrating && <Confetti trigger={person.id + "_" + Date.now()} />}
@@ -4971,10 +4971,12 @@ function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting
       </div>
 
       <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+        {person.meetingTrackingEnabled !== false && <button onClick={() => onLogMeeting(todayKey())} title="Treffen für heute eintragen" style={{ ...primaryBtn, padding: "7px 10px", fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
+          <Plus size={13} /> Treffen
+        </button>}
         {person.meetingTrackingEnabled !== false && <button onClick={() => setShowHistory((value) => !value)} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5 }}>
           {showHistory ? "Weniger" : "Verlauf"}
         </button>}
-        <IconButton onClick={onEdit} title="Bearbeiten"><Pencil size={14} /></IconButton>
       </div>
       </div>
 
@@ -5072,6 +5074,23 @@ function MeetingHistory({ person, onAddMeeting, onDeleteMeeting }) {
    ============================================================ */
 function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPerson }) {
   const viewport = useVisualViewport();
+  const [viewMode, setViewMode] = useState("all");
+  // Alle Verbindungspaare auf einmal (dedupliziert, da jede Verbindung bei
+  // beiden Personen gespeichert ist) - Alternative zum Fokus-Baum, der immer
+  // nur die Familie einer Person zeigt.
+  const allEdges = useMemo(() => {
+    const seen = new Set();
+    const edges = [];
+    persons.forEach((p) => (p.relationships || []).forEach((r) => {
+      const key = [p.id, r.personId].sort().join("|");
+      if (seen.has(key)) return;
+      const other = persons.find((x) => x.id === r.personId);
+      if (!other) return;
+      seen.add(key);
+      edges.push({ a: p, b: other, label: relationshipLabel(r.type) });
+    }));
+    return edges.sort((x, y) => x.a.name.localeCompare(y.a.name, "de"));
+  }, [persons]);
   const [focusId, setFocusId] = useState(() => persons.find((person) => (person.relationships || []).length > 0)?.id || persons[0]?.id || "");
   useEffect(() => { if (!persons.some((person) => person.id === focusId)) setFocusId(persons[0]?.id || ""); }, [persons, focusId]);
   const tree = useMemo(() => {
@@ -5100,31 +5119,56 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 760 }} onClick={(e) => e.stopPropagation()}>
         <div style={modalBodyStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
             <div>
               <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2>
-              <p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Es wird nur die Familie der ausgewählten Fokusperson angezeigt.</p>
+              <p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>
+                {viewMode === "all" ? "Alle Verbindungen auf einen Blick." : "Familienbaum einer einzelnen Fokusperson."}
+              </p>
             </div>
             <IconButton onClick={onClose}><X size={16} /></IconButton>
           </div>
 
-          <div style={{ marginBottom: 16 }}><label style={labelStyle}>Fokusperson</label><select value={focusId} onChange={(e) => setFocusId(e.target.value)} style={{ ...inputStyle, marginBottom: 0, cursor: "pointer" }}>{persons.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></div>
-          {!tree ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>Keine Person verfügbar.</div> : <div style={{ overflowX: "auto", padding: "6px 0 12px" }}><div style={{ minWidth: 330, display: "flex", flexDirection: "column", alignItems: "stretch" }}>
-            <Generation label="Großeltern" people={tree.grandparents} />
-            {tree.grandparents.length > 0 && connector}
-            <Generation label="Eltern" people={tree.parents} />
-            {tree.parents.length > 0 && connector}
-            <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", flexWrap: "wrap", gap: 18 }}>
-              {tree.siblings.length > 0 && <Generation label="Geschwister" people={tree.siblings} />}
-              <div style={{ textAlign: "center" }}><div style={{ fontSize: 9.5, fontWeight: 700, color: COLORS.ember2, textTransform: "uppercase", marginBottom: 7 }}>Fokus</div><PersonNode person={tree.focus} central /></div>
-              {tree.partners.length > 0 && <Generation label="Partner/in" people={tree.partners} />}
-            </div>
-            {tree.children.length > 0 && connector}
-            <Generation label="Kinder" people={tree.children} />
-            {tree.grandchildren.length > 0 && connector}
-            <Generation label="Enkel" people={tree.grandchildren} />
-            {tree.grandparents.length + tree.parents.length + tree.partners.length + tree.siblings.length + tree.children.length + tree.grandchildren.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.textFaint, textAlign: "center", marginTop: 16 }}>Für diese Person sind noch keine familiären Verbindungen eingetragen.</div>}
-          </div></div>}
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <ToggleChip active={viewMode === "all"} onClick={() => setViewMode("all")}>Alle Verbindungen</ToggleChip>
+            <ToggleChip active={viewMode === "tree"} onClick={() => setViewMode("tree")}>Familienbaum</ToggleChip>
+          </div>
+
+          {viewMode === "all" ? (
+            allEdges.length === 0 ? (
+              <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>Noch keine Verbindungen eingetragen.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {allEdges.map((edge, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: COLORS.bgSoft, borderRadius: 10, flexWrap: "wrap" }}>
+                    <PersonNode person={edge.a} />
+                    <span style={{ fontSize: 11.5, color: COLORS.textMuted, flexShrink: 0 }}>{edge.label}</span>
+                    <PersonNode person={edge.b} />
+                  </div>
+                ))}
+              </div>
+            )
+          ) : (
+            <>
+              <div style={{ marginBottom: 16 }}><label style={labelStyle}>Fokusperson</label><select value={focusId} onChange={(e) => setFocusId(e.target.value)} style={{ ...inputStyle, marginBottom: 0, cursor: "pointer" }}>{persons.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></div>
+              {!tree ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>Keine Person verfügbar.</div> : <div style={{ overflowX: "auto", padding: "6px 0 12px" }}><div style={{ minWidth: 330, display: "flex", flexDirection: "column", alignItems: "stretch" }}>
+                <Generation label="Großeltern" people={tree.grandparents} />
+                {tree.grandparents.length > 0 && connector}
+                <Generation label="Eltern" people={tree.parents} />
+                {tree.parents.length > 0 && connector}
+                <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", flexWrap: "wrap", gap: 18 }}>
+                  {tree.siblings.length > 0 && <Generation label="Geschwister" people={tree.siblings} />}
+                  <div style={{ textAlign: "center" }}><div style={{ fontSize: 9.5, fontWeight: 700, color: COLORS.ember2, textTransform: "uppercase", marginBottom: 7 }}>Fokus</div><PersonNode person={tree.focus} central /></div>
+                  {tree.partners.length > 0 && <Generation label="Partner/in" people={tree.partners} />}
+                </div>
+                {tree.children.length > 0 && connector}
+                <Generation label="Kinder" people={tree.children} />
+                {tree.grandchildren.length > 0 && connector}
+                <Generation label="Enkel" people={tree.grandchildren} />
+                {tree.grandparents.length + tree.parents.length + tree.partners.length + tree.siblings.length + tree.children.length + tree.grandchildren.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.textFaint, textAlign: "center", marginTop: 16 }}>Für diese Person sind noch keine familiären Verbindungen eingetragen.</div>}
+              </div></div>}
+            </>
+          )}
         </div>
       </div>
     </div>
