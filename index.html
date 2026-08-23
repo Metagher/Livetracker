@@ -1481,6 +1481,7 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
   // in die neue Mehrfachzuordnung übernommen.
   const [personGroupIds, setPersonGroupIds] = useState(initial?.groups || (initial?.category ? [initial.category] : []));
   const [birthday, setBirthday] = useState(initial?.birthday || "");
+  const [birthdayYearConfirmed, setBirthdayYearConfirmed] = useState(initial?.birthdayYearConfirmed === true);
   const [color, setColor] = useState(initial?.color || HABIT_COLORS[0]);
   const [meetingTrackingEnabled, setMeetingTrackingEnabled] = useState(initial?.meetingTrackingEnabled !== false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1524,7 +1525,26 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
         </div>
 
         <label style={labelStyle}>Geburtsdatum (optional)</label>
-        <input type="date" max={todayKey()} value={birthday} onChange={(e) => setBirthday(e.target.value)} style={inputStyle} />
+        <input type="date" max={todayKey()} value={birthday} onChange={(e) => {
+          setBirthday(e.target.value);
+          if (!e.target.value) setBirthdayYearConfirmed(false);
+        }} style={{ ...inputStyle, marginBottom: 8 }} />
+        <label style={{
+          display: "flex", alignItems: "center", gap: 9, marginBottom: 14,
+          color: birthday ? COLORS.textMuted : COLORS.textFaint, cursor: birthday ? "pointer" : "not-allowed",
+        }}>
+          <input
+            type="checkbox"
+            checked={birthdayYearConfirmed}
+            disabled={!birthday}
+            onChange={(e) => setBirthdayYearConfirmed(e.target.checked)}
+            style={{ width: 17, height: 17, margin: 0 }}
+          />
+          <span>
+            <strong style={{ display: "block", fontSize: 12.5, color: birthday ? COLORS.text : COLORS.textFaint }}>Geburtsjahr ist sicher</strong>
+            <span style={{ display: "block", fontSize: 11, marginTop: 2 }}>Nicht auswählen, wenn du dir beim Jahr nicht sicher bist.</span>
+          </span>
+        </label>
 
         <label style={labelStyle}>Infos (optional)</label>
         <textarea
@@ -1621,7 +1641,7 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
               disabled={!canSave}
               onClick={() => onSave({
                 id: initial?.id || `person_${Date.now()}`,
-                name: name.trim(), info: info.trim(), groups: personGroupIds, category: personGroupIds[0] || "", birthday: birthday || null, color, meetingTrackingEnabled,
+                name: name.trim(), info: info.trim(), groups: personGroupIds, category: personGroupIds[0] || "", birthday: birthday || null, birthdayYearConfirmed: birthday ? birthdayYearConfirmed : false, color, meetingTrackingEnabled,
                 meetings: initial?.meetings || [],
                 relationships,
                 createdAt: initial?.createdAt || todayKey(),
@@ -2189,7 +2209,7 @@ function Dashboard({
     const currentDate = keyToDate(currentDateKey);
     return (persons || [])
       .filter((p) => p.birthday && isValidDateKey(p.birthday) && keyToDate(p.birthday) <= currentDate)
-      .map((p) => ({ person: p, days: daysUntilBirthday(p.birthday, currentDate), nextAge: ageAtNextBirthday(p.birthday, currentDate) }))
+      .map((p) => ({ person: p, days: daysUntilBirthday(p.birthday, currentDate), nextAge: p.birthdayYearConfirmed === true ? ageAtNextBirthday(p.birthday, currentDate) : null }))
       .filter((x) => x.days <= 14)
       .sort((a, b) => a.days - b.days);
   }, [persons, currentDateKey]);
@@ -2249,7 +2269,7 @@ function Dashboard({
               <span>🎂</span>
               <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{person.name}</span>
               <span style={{ color: COLORS.textMuted, fontSize: 12, flexShrink: 0 }}>
-                {days === 0 ? `heute · wird ${nextAge}` : days === 1 ? `morgen · wird ${nextAge}` : `in ${days} Tagen · wird ${nextAge}`}
+                {days === 0 ? `heute${nextAge !== null ? ` · wird ${nextAge}` : ""}` : days === 1 ? `morgen${nextAge !== null ? ` · wird ${nextAge}` : ""}` : `in ${days} Tagen${nextAge !== null ? ` · wird ${nextAge}` : ""}`}
               </span>
             </div>
           ))}
@@ -5147,7 +5167,7 @@ function MeetingPeopleModal({ meeting, onChange, onClose, onConfirm }) {
 
 function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting, onEdit }) {
   const stats = personStats(person);
-  const age = birthdayAge(person.birthday);
+  const age = person.birthdayYearConfirmed === true ? birthdayAge(person.birthday) : null;
   const initial = (person.name || "?").trim().charAt(0).toUpperCase();
   const [showHistory, setShowHistory] = useState(false);
 
@@ -5177,7 +5197,7 @@ function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting
               display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600,
               padding: "2px 7px", borderRadius: 6, color: COLORS.ember2, background: COLORS.ember2 + "1a",
             }}>
-              🎂 {keyToDate(person.birthday).toLocaleDateString("de-DE")}{age !== null ? ` · ${age} Jahre` : ""}
+              🎂 {keyToDate(person.birthday).toLocaleDateString("de-DE")}{age !== null ? ` · ${age} Jahre` : " · Jahr unsicher"}
             </span>
           )}
           {person.meetingTrackingEnabled === false && (
@@ -5793,7 +5813,7 @@ function SettingsPage({
       const stats = personStats(p);
       const groupLabel = (p.groups && p.groups.length ? p.groups : p.category ? [p.category] : []).join(", ");
       return {
-        Name: p.name, Gruppe: groupLabel, Geburtstag: p.birthday || "", Info: p.info || "",
+        Name: p.name, Gruppe: groupLabel, Geburtstag: p.birthday || "", "Geburtsjahr sicher": p.birthday ? (p.birthdayYearConfirmed === true ? "Ja" : "Nein") : "", Info: p.info || "",
         "Treffen gesamt": stats.total, "Zuletzt getroffen": stats.lastMet || "",
       };
     });
