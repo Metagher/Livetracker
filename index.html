@@ -5616,11 +5616,21 @@ function LegacyPersonNetworkView({ persons, title = "Verbindungen", onClose, onE
    statt als überlagerte Linien dargestellt. */
 function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPerson }) {
   const viewport = useVisualViewport();
+  const isMobile = useIsMobile();
   const [mode, setMode] = useState("explore");
   const [focusId, setFocusId] = useState(() => persons.find((person) => (person.relationships || []).length)?.id || persons[0]?.id || "");
   const [depth, setDepth] = useState(3);
   const [search, setSearch] = useState("");
+  const [networkZoom, setNetworkZoom] = useState(() => window.innerWidth <= 760 ? 0.9 : 1);
+  const networkScrollRef = useRef(null);
   const byId = useMemo(() => new Map(persons.map((person) => [person.id, person])), [persons]);
+  const relationshipPriority = (type) => {
+    if (["partner", "parent", "child"].includes(type)) return 0;
+    if (["sibling", "grandparent", "grandchild"].includes(type)) return 1;
+    if (["auntUncle", "nibling", "cousin"].includes(type)) return 2;
+    return 3;
+  };
+  const relationshipTier = (type) => ["direkt", "nah", "erweitert", "sonstig"][relationshipPriority(type)];
   useEffect(() => { if (!byId.has(focusId)) setFocusId(persons[0]?.id || ""); }, [byId, focusId, persons]);
 
   const edges = useMemo(() => {
@@ -5643,23 +5653,25 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     let hasMore = false;
     while (queue.length) {
       const current = queue.shift();
-      const nextRelationships = (current.person.relationships || []).filter((relationship) => byId.has(relationship.personId) && !visited.has(relationship.personId));
+      const nextRelationships = (current.person.relationships || [])
+        .filter((relationship) => byId.has(relationship.personId) && !visited.has(relationship.personId))
+        .sort((a, b) => relationshipPriority(a.type) - relationshipPriority(b.type) || (byId.get(a.personId)?.name || "").localeCompare(byId.get(b.personId)?.name || "", "de"));
       if (current.level >= depth) { if (nextRelationships.length) hasMore = true; continue; }
       nextRelationships.forEach((relationship) => {
         const person = byId.get(relationship.personId);
         visited.add(person.id);
-        const item = { person, via: current.person, type: relationship.type, level: current.level + 1, path: [...current.path, person.name] };
+        const item = { person, via: current.person, type: relationship.type, priority: relationshipPriority(relationship.type), level: current.level + 1, path: [...current.path, person.name] };
         if (!layers[item.level - 1]) layers[item.level - 1] = [];
         layers[item.level - 1].push(item);
         queue.push(item);
       });
     }
-    layers.forEach((layer) => layer.sort((a, b) => a.person.name.localeCompare(b.person.name, "de")));
+    layers.forEach((layer) => layer.sort((a, b) => a.priority - b.priority || a.via.name.localeCompare(b.via.name, "de") || a.person.name.localeCompare(b.person.name, "de")));
     return { focus, layers, hasMore };
   }, [byId, focusId, depth]);
 
   const radialNetwork = useMemo(() => {
-    if (!network.focus) return { size: 520, positions: new Map(), treeEdges: [], crossEdges: [] };
+    if (!network.focus) return { size: 520, positions: new Map(), treeEdges: [], displayEdges: [], radii: [] };
     const radii = [];
     let previousRadius = 0;
     network.layers.forEach((layer, index) => {
@@ -5676,8 +5688,18 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     const treeEdges = [];
     network.layers.forEach((layer, levelIndex) => {
       const count = layer?.length || 0;
-      (layer || []).forEach((item, itemIndex) => {
-        const angleOffset = levelIndex % 2 === 0 ? -Math.PI / 2 : -Math.PI / 2 + Math.PI / Math.max(1, count);
+      // Ab der zweiten Ebene liegen Personen desselben Astes nebeneinander.
+      // Die Reihenfolge der Äste folgt der Position ihrer Bezugsperson auf dem
+      // vorherigen Ring; innerhalb eines Astes steht direkte Familie zuerst.
+      const orderedLayer = [...(layer || [])].sort((a, b) => {
+        const aVia = positions.get(a.via.id);
+        const bVia = positions.get(b.via.id);
+        const aAngle = aVia ? (Math.atan2(aVia.y - center, aVia.x - center) + Math.PI * 2.5) % (Math.PI * 2) : 0;
+        const bAngle = bVia ? (Math.atan2(bVia.y - center, bVia.x - center) + Math.PI * 2.5) % (Math.PI * 2) : 0;
+        return aAngle - bAngle || a.priority - b.priority || a.person.name.localeCompare(b.person.name, "de");
+      });
+      orderedLayer.forEach((item, itemIndex) => {
+        const angleOffset = -Math.PI / 2;
         const angle = angleOffset + (itemIndex * Math.PI * 2) / Math.max(1, count);
         const position = {
           x: center + Math.cos(angle) * radii[levelIndex],
@@ -5690,9 +5712,24 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
       });
     });
     const treeKeys = new Set(treeEdges.map((edge) => [edge.fromId, edge.toId].sort().join("|")));
-    const crossEdges = edges.filter((edge) => positions.has(edge.source.id) && positions.has(edge.target.id) && !treeKeys.has([edge.source.id, edge.target.id].sort().join("|")));
-    return { size, center, positions, treeEdges, crossEdges, radii };
+    const displayEdges = edges
+      .filter((edge) => positions.has(edge.source.id) && positions.has(edge.target.id))
+      .map((edge) => ({ ...edge, priority: relationshipPriority(edge.type), isTreeEdge: treeKeys.has([edge.source.id, edge.target.id].sort().join("|")) }))
+      .sort((a, b) => b.priority - a.priority || Number(a.isTreeEdge) - Number(b.isTreeEdge));
+    return { size, center, positions, treeEdges, displayEdges, radii };
   }, [network, edges]);
+
+  // Nach Fokus-, Tiefen- oder Zoomänderungen liegt die Fokusperson auch auf
+  // kleinen Displays wieder in der Mitte des sichtbaren Ausschnitts.
+  useEffect(() => {
+    const container = networkScrollRef.current;
+    if (!container || mode !== "explore") return;
+    const frame = requestAnimationFrame(() => {
+      container.scrollLeft = Math.max(0, (container.scrollWidth - container.clientWidth) / 2);
+      container.scrollTop = Math.max(0, (container.scrollHeight - container.clientHeight) / 2);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusId, depth, networkZoom, mode, radialNetwork.size]);
 
   const filteredEdges = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("de");
@@ -5710,7 +5747,7 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
   </div>;
 
   return <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
-    <div style={{ ...modalStyle, maxWidth: 820 }} onClick={(event) => event.stopPropagation()}><div style={modalBodyStyle}>
+    <div style={{ ...modalStyle, maxWidth: 820 }} onClick={(event) => event.stopPropagation()}><div style={{ ...modalBodyStyle, padding: isMobile ? 14 : 24 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 16 }}><div><h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2><p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Beziehungen übersichtlich nach Entfernungsebenen.</p></div><IconButton onClick={onClose}><X size={16} /></IconButton></div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}><ToggleChip active={mode === "explore"} onClick={() => setMode("explore")}>Netz erkunden</ToggleChip><ToggleChip active={mode === "list"} onClick={() => setMode("list")}>Alle Beziehungen</ToggleChip></div>
 
@@ -5725,18 +5762,31 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
             {network.layers.map((layer, index) => layer?.length > 0 && <span key={index} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: index === 0 ? COLORS.ember2 : COLORS.violet, opacity: Math.max(0.35, 1 - index * 0.18) }} />{index === 0 ? "Direkt" : `Ebene ${index + 1}`} · {layer.length}</span>)}
             <span style={{ marginLeft: "auto" }}>Person antippen, um sie zu zentrieren</span>
           </div>
-          {network.layers.some((layer) => layer?.length) && <div style={{ width: "100%", overflow: "auto", borderRadius: 12, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, maxHeight: "min(62vh, 680px)" }}>
-            <svg viewBox={`0 0 ${radialNetwork.size} ${radialNetwork.size}`} width={radialNetwork.size} height={radialNetwork.size} role="img" aria-label={`Beziehungsnetz von ${network.focus.name}`} style={{ display: "block", maxWidth: "none", margin: "0 auto" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 10.5, color: COLORS.textFaint, marginTop: -10 }}>
+            <span style={{ color: COLORS.ember2 }}>━━ direkte Familie</span>
+            <span style={{ color: COLORS.violet }}>━━ nahe Familie</span>
+            <span>┄┄ erweiterte Familie</span>
+            <span style={{ opacity: 0.65 }}>┈┈ sonstige</span>
+          </div>
+          {network.layers.some((layer) => layer?.length) && <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: -7 }}>
+              <span style={{ fontSize: 10.5, color: COLORS.textFaint }}>{isMobile ? "Mit einem Finger verschieben" : "Ansicht verschieben oder zoomen"}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <button onClick={() => setNetworkZoom((value) => Math.max(0.65, Math.round((value - 0.15) * 100) / 100))} disabled={networkZoom <= 0.65} aria-label="Netz verkleinern" style={{ ...ghostBtn, width: isMobile ? 36 : 31, height: isMobile ? 36 : 31, padding: 0, fontSize: 19, opacity: networkZoom <= 0.65 ? 0.45 : 1 }}>−</button>
+                <button onClick={() => setNetworkZoom(isMobile ? 0.9 : 1)} style={{ ...ghostBtn, minWidth: 58, height: isMobile ? 36 : 31, padding: "0 8px", fontFamily: "JetBrains Mono, monospace", fontSize: 10.5 }}>{Math.round(networkZoom * 100)}%</button>
+                <button onClick={() => setNetworkZoom((value) => Math.min(1.75, Math.round((value + 0.15) * 100) / 100))} disabled={networkZoom >= 1.75} aria-label="Netz vergrößern" style={{ ...ghostBtn, width: isMobile ? 36 : 31, height: isMobile ? 36 : 31, padding: 0, fontSize: 19, opacity: networkZoom >= 1.75 ? 0.45 : 1 }}>+</button>
+              </div>
+            </div>
+            <div ref={networkScrollRef} style={{ width: "100%", overflow: "auto", WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y", overscrollBehavior: "contain", borderRadius: 12, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, maxHeight: isMobile ? "56vh" : "min(62vh, 680px)" }}>
+            <svg viewBox={`0 0 ${radialNetwork.size} ${radialNetwork.size}`} width={radialNetwork.size * networkZoom} height={radialNetwork.size * networkZoom} role="img" aria-label={`Beziehungsnetz von ${network.focus.name}`} style={{ display: "block", maxWidth: "none", margin: "0 auto" }}>
               {radialNetwork.radii.map((radius, index) => <circle key={index} cx={radialNetwork.center} cy={radialNetwork.center} r={radius} fill="none" stroke={COLORS.borderSoft} strokeWidth="1" strokeDasharray="4 7" />)}
-              {radialNetwork.crossEdges.map((edge) => {
+              {radialNetwork.displayEdges.map((edge) => {
                 const from = radialNetwork.positions.get(edge.source.id);
                 const to = radialNetwork.positions.get(edge.target.id);
-                return <line key={[edge.source.id, edge.target.id].sort().join("|")} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={COLORS.textFaint} strokeWidth="1" strokeDasharray="3 5" opacity="0.38" />;
-              })}
-              {radialNetwork.treeEdges.map((edge) => {
-                const from = radialNetwork.positions.get(edge.fromId);
-                const to = radialNetwork.positions.get(edge.toId);
-                return from && to ? <line key={`${edge.fromId}|${edge.toId}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={COLORS.border} strokeWidth="2" opacity="0.9" /> : null;
+                const stroke = edge.priority === 0 ? COLORS.ember2 : edge.priority === 1 ? COLORS.violet : COLORS.textFaint;
+                const strokeWidth = edge.priority === 0 ? 3.2 : edge.priority === 1 ? 2.2 : edge.priority === 2 ? 1.45 : 1;
+                const dash = edge.priority === 2 ? "5 4" : edge.priority === 3 ? "2 5" : undefined;
+                return <line key={[edge.source.id, edge.target.id].sort().join("|")} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dash} opacity={edge.isTreeEdge ? 0.95 : edge.priority <= 1 ? 0.72 : 0.5}><title>{edge.source.name} · {relationshipLabel(edge.type)} · {edge.target.name} ({relationshipTier(edge.type)})</title></line>;
               })}
               {[...radialNetwork.positions.values()].map((position) => {
                 const central = position.level === 0;
@@ -5752,7 +5802,7 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
                 </g>;
               })}
             </svg>
-          </div>}
+          </div></>}
           {network.layers.every((layer) => !layer?.length) && <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 18 }}>Für diese Person sind noch keine Verbindungen eingetragen.</div>}
           {network.hasMore && <div style={{ fontSize: 11.5, color: COLORS.textFaint, textAlign: "center" }}>Weitere Personen sind verbunden. Erhöhe die Anzahl der Ebenen, um sie anzuzeigen.</div>}
         </div>}
