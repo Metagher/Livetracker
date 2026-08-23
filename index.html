@@ -5757,7 +5757,7 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     return { size, center, positions, treeEdges, displayEdges, radii };
   }, [network, edges]);
 
-  const familyTree = useMemo(() => {
+  const legacyFamilyTree = useMemo(() => {
     if (!network.focus) return { width: 560, height: 420, positions: new Map(), displayEdges: [], rows: [], focusX: 280, focusY: 210 };
     const items = [
       { person: network.focus, generation: 0, level: 0, priority: -1, type: null, via: null },
@@ -5813,6 +5813,117 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     const focusPosition = positions.get(network.focus.id) || { x: centerX, y: height / 2 };
     return { width, height, positions, displayEdges, rows, focusX: focusPosition.x, focusY: focusPosition.y };
   }, [network, edges]);
+
+  // Klassischer Stammbaum: Partner bilden eine gemeinsame Familieneinheit.
+  // Kinder zweigen von einer gemeinsamen Elternlinie ab, statt direkt mit
+  // einzelnen diagonalen Linien an jedem Elternteil zu hängen.
+  const familyTree = useMemo(() => {
+    if (!network.focus) return { width: 620, height: 440, positions: new Map(), partnerEdges: [], parentGroups: [], secondaryEdges: [], rows: [], focusX: 310, focusY: 220 };
+    const items = [
+      { person: network.focus, generation: 0, level: 0, priority: -1, type: null, via: null },
+      ...network.layers.flatMap((layer) => layer || []),
+    ];
+    const itemById = new Map(items.map((item) => [item.person.id, item]));
+    const visibleIds = new Set(itemById.keys());
+    const grouped = new Map();
+    items.forEach((item) => {
+      if (!grouped.has(item.generation)) grouped.set(item.generation, []);
+      grouped.get(item.generation).push(item);
+    });
+    const generations = [...grouped.keys()].sort((a, b) => a - b);
+    const nodeWidth = 122;
+    const partnerGap = 34;
+    const familyGap = 82;
+    const rowGap = 150;
+
+    // Partner-Komponenten werden je Generation als eine Einheit behandelt.
+    const unitsByGeneration = new Map();
+    generations.forEach((generation) => {
+      const rowItems = grouped.get(generation);
+      const rowIds = new Set(rowItems.map((item) => item.person.id));
+      const unassigned = new Set(rowIds);
+      const units = [];
+      while (unassigned.size) {
+        const startId = unassigned.values().next().value;
+        const componentIds = [];
+        const queue = [startId];
+        unassigned.delete(startId);
+        while (queue.length) {
+          const currentId = queue.shift();
+          componentIds.push(currentId);
+          (byId.get(currentId)?.relationships || []).filter((relationship) => relationship.type === "partner" && rowIds.has(relationship.personId)).forEach((relationship) => {
+            if (unassigned.has(relationship.personId)) { unassigned.delete(relationship.personId); queue.push(relationship.personId); }
+          });
+        }
+        const unitItems = componentIds.map((id) => itemById.get(id)).filter(Boolean).sort((a, b) => {
+          if (a.person.id === network.focus.id) return -1;
+          if (b.person.id === network.focus.id) return 1;
+          return a.person.name.localeCompare(b.person.name, "de");
+        });
+        units.push({ items: unitItems, width: unitItems.length * nodeWidth + Math.max(0, unitItems.length - 1) * partnerGap, containsFocus: componentIds.includes(network.focus.id) });
+      }
+      units.sort((a, b) => Number(b.containsFocus) - Number(a.containsFocus) || a.items[0].person.name.localeCompare(b.items[0].person.name, "de"));
+      unitsByGeneration.set(generation, units);
+    });
+
+    const widestRow = Math.max(1, ...generations.map((generation) => unitsByGeneration.get(generation).reduce((sum, unit) => sum + unit.width, 0) + Math.max(0, unitsByGeneration.get(generation).length - 1) * familyGap));
+    const width = Math.max(680, widestRow + 150);
+    const height = Math.max(440, (generations.length - 1) * rowGap + 150);
+    const centerX = width / 2;
+    const positions = new Map();
+    const rows = [];
+
+    generations.forEach((generation, rowIndex) => {
+      const y = 70 + rowIndex * rowGap;
+      const units = unitsByGeneration.get(generation);
+      const focusUnit = units.find((unit) => unit.containsFocus);
+      const remaining = units.filter((unit) => !unit.containsFocus);
+      const parentAnchor = (unit) => {
+        const anchors = unit.items.flatMap((item) => items.filter((candidate) => positions.has(candidate.person.id) && (candidate.person.relationships || []).some((relationship) => relationship.type === "parent" && relationship.personId === item.person.id)).map((candidate) => positions.get(candidate.person.id).x));
+        return anchors.length ? anchors.reduce((sum, value) => sum + value, 0) / anchors.length : centerX;
+      };
+      remaining.sort((a, b) => parentAnchor(a) - parentAnchor(b) || a.items[0].person.name.localeCompare(b.items[0].person.name, "de"));
+      const ordered = focusUnit
+        ? [...remaining.slice(0, Math.ceil(remaining.length / 2)), focusUnit, ...remaining.slice(Math.ceil(remaining.length / 2))]
+        : units;
+      const totalWidth = ordered.reduce((sum, unit) => sum + unit.width, 0) + Math.max(0, ordered.length - 1) * familyGap;
+      let cursorX = centerX - totalWidth / 2;
+      ordered.forEach((unit) => {
+        unit.items.forEach((item, index) => {
+          const x = cursorX + nodeWidth / 2 + index * (nodeWidth + partnerGap);
+          positions.set(item.person.id, { x, y, ...item });
+        });
+        cursorX += unit.width + familyGap;
+      });
+      rows.push({ generation, y });
+    });
+
+    const partnerSeen = new Set();
+    const partnerEdges = [];
+    items.forEach((item) => (item.person.relationships || []).filter((relationship) => relationship.type === "partner" && visibleIds.has(relationship.personId)).forEach((relationship) => {
+      const key = [item.person.id, relationship.personId].sort().join("|");
+      if (!partnerSeen.has(key)) { partnerSeen.add(key); partnerEdges.push({ aId: item.person.id, bId: relationship.personId }); }
+    }));
+
+    // Kinder nach derselben sichtbaren Elternkombination gruppieren. So teilen
+    // Geschwister den klassischen horizontalen Geschwister-Ast.
+    const parentGroupMap = new Map();
+    items.forEach((childItem) => {
+      const parentIds = items.filter((candidate) => (candidate.person.relationships || []).some((relationship) => relationship.type === "parent" && relationship.personId === childItem.person.id)).map((candidate) => candidate.person.id).sort();
+      if (!parentIds.length) return;
+      const key = parentIds.join("|");
+      if (!parentGroupMap.has(key)) parentGroupMap.set(key, { parentIds, childIds: [] });
+      parentGroupMap.get(key).childIds.push(childItem.person.id);
+    });
+    const parentGroups = [...parentGroupMap.values()].filter((group) => group.parentIds.every((id) => positions.has(id)) && group.childIds.some((id) => positions.has(id)));
+
+    const structuralKeys = new Set();
+    partnerEdges.forEach((edge) => structuralKeys.add([edge.aId, edge.bId].sort().join("|")));
+    parentGroups.forEach((group) => group.childIds.forEach((childId) => group.parentIds.forEach((parentId) => structuralKeys.add([parentId, childId].sort().join("|")))));
+    const secondaryEdges = edges.filter((edge) => visibleIds.has(edge.source.id) && visibleIds.has(edge.target.id) && !structuralKeys.has([edge.source.id, edge.target.id].sort().join("|")) && !["parent", "child", "partner"].includes(edge.type)).map((edge) => ({ ...edge, priority: relationshipPriority(edge.type) }));
+    const focusPosition = positions.get(network.focus.id) || { x: centerX, y: height / 2 };
+    return { width, height, positions, partnerEdges, parentGroups, secondaryEdges, rows, focusX: focusPosition.x, focusY: focusPosition.y };
+  }, [network, edges, byId]);
 
   // Nach Fokus-, Tiefen- oder Zoomänderungen liegt die Fokusperson auch auf
   // kleinen Displays wieder in der Mitte des sichtbaren Ausschnitts.
@@ -5878,25 +5989,46 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
             <div ref={networkScrollRef} style={{ width: "100%", overflow: "auto", WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y", overscrollBehavior: "contain", borderRadius: 12, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, maxHeight: isMobile ? "56vh" : "min(62vh, 680px)" }}>
             <svg viewBox={`0 0 ${familyTree.width} ${familyTree.height}`} width={familyTree.width * networkZoom} height={familyTree.height * networkZoom} role="img" aria-label={`Stammbaum von ${network.focus.name}`} style={{ display: "block", maxWidth: "none", margin: "0 auto" }}>
               {familyTree.rows.map((row) => {
-                const label = row.generation === 0 ? "Fokus-Ebene" : row.generation === -1 ? "Eltern-Ebene" : row.generation === -2 ? "Großeltern-Ebene" : row.generation === 1 ? "Kinder-Ebene" : row.generation === 2 ? "Enkel-Ebene" : row.generation < 0 ? `${Math.abs(row.generation)} Generationen darüber` : `${row.generation} Generationen darunter`;
+                const label = row.generation === 0 ? "Eigene Generation" : row.generation === -1 ? "Eltern" : row.generation === -2 ? "Großeltern" : row.generation === 1 ? "Kinder" : row.generation === 2 ? "Enkel" : row.generation < 0 ? `${Math.abs(row.generation)} Generationen darüber` : `${row.generation} Generationen darunter`;
                 return <g key={row.generation}>
-                  <line x1="18" y1={row.y} x2={familyTree.width - 18} y2={row.y} stroke={row.generation === 0 ? COLORS.border : COLORS.borderSoft} strokeWidth="1" strokeDasharray={row.generation === 0 ? undefined : "4 7"} />
                   <rect x="18" y={row.y - 53} width="118" height="20" rx="7" fill={COLORS.surfaceRaised} />
                   <text x="27" y={row.y - 39} fill={row.generation === 0 ? COLORS.textMuted : COLORS.textFaint} fontSize="10" fontWeight="600">{label}</text>
                 </g>;
               })}
-              {familyTree.displayEdges.map((edge) => {
+              {familyTree.secondaryEdges.map((edge) => {
                 const from = familyTree.positions.get(edge.source.id);
                 const to = familyTree.positions.get(edge.target.id);
                 const stroke = relationshipColor(edge.priority);
-                const strokeWidth = edge.priority === 0 ? 3.2 : edge.priority === 1 ? 2.2 : edge.priority === 2 ? 1.45 : 1;
-                const dash = edge.priority === 2 ? "5 4" : edge.priority === 3 ? "2 5" : undefined;
-                const sameGeneration = Math.abs(from.y - to.y) < 2;
-                const middleY = (from.y + to.y) / 2;
-                const path = sameGeneration
-                  ? `M ${from.x} ${from.y} C ${from.x} ${from.y - 42}, ${to.x} ${to.y - 42}, ${to.x} ${to.y}`
-                  : `M ${from.x} ${from.y} L ${from.x} ${middleY} L ${to.x} ${middleY} L ${to.x} ${to.y}`;
-                return <path key={[edge.source.id, edge.target.id].sort().join("|")} d={path} fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dash} opacity={edge.priority <= 1 ? 0.85 : 0.56} strokeLinejoin="round"><title>{edge.source.name} · {relationshipLabel(edge.type)} · {edge.target.name} ({relationshipTier(edge.type)})</title></path>;
+                const controlY = Math.min(from.y, to.y) - 40;
+                return <path key={[edge.source.id, edge.target.id].sort().join("|")} d={`M ${from.x} ${from.y} C ${from.x} ${controlY}, ${to.x} ${controlY}, ${to.x} ${to.y}`} fill="none" stroke={stroke} strokeWidth={edge.priority === 1 ? 1.8 : 1.25} strokeDasharray="5 5" opacity="0.45"><title>{edge.source.name} · {relationshipLabel(edge.type)} · {edge.target.name}</title></path>;
+              })}
+              {familyTree.partnerEdges.map((edge) => {
+                const a = familyTree.positions.get(edge.aId);
+                const b = familyTree.positions.get(edge.bId);
+                if (!a || !b) return null;
+                const left = a.x < b.x ? a : b;
+                const right = a.x < b.x ? b : a;
+                return <g key={`${edge.aId}|${edge.bId}`}>
+                  <line x1={left.x + 58} y1={left.y} x2={right.x - 58} y2={right.y} stroke={COLORS.ember2} strokeWidth="3" />
+                  <circle cx={(left.x + right.x) / 2} cy={left.y} r="4" fill={COLORS.ember2} />
+                </g>;
+              })}
+              {familyTree.parentGroups.map((group) => {
+                const parents = group.parentIds.map((id) => familyTree.positions.get(id)).filter(Boolean);
+                const children = group.childIds.map((id) => familyTree.positions.get(id)).filter(Boolean);
+                if (!parents.length || !children.length) return null;
+                const parentCenterY = Math.max(...parents.map((parent) => parent.y));
+                const parentY = parents.length > 1 ? parentCenterY : parentCenterY + 27;
+                const childY = Math.min(...children.map((child) => child.y)) - 27;
+                const unionX = parents.reduce((sum, parent) => sum + parent.x, 0) / parents.length;
+                const branchY = parentY + (childY - parentY) * 0.48;
+                const childXs = children.map((child) => child.x);
+                return <g key={`${group.parentIds.join("|")}=>${group.childIds.join("|")}`}>
+                  {parents.length > 1 && <line x1={Math.min(...parents.map((parent) => parent.x)) + 58} y1={parentCenterY} x2={Math.max(...parents.map((parent) => parent.x)) - 58} y2={parentCenterY} stroke={COLORS.ember2} strokeWidth="3" />}
+                  <path d={`M ${unionX} ${parentY} L ${unionX} ${branchY}`} fill="none" stroke={COLORS.ember2} strokeWidth="3" />
+                  {children.length > 1 && <line x1={Math.min(...childXs)} y1={branchY} x2={Math.max(...childXs)} y2={branchY} stroke={COLORS.ember2} strokeWidth="3" />}
+                  {children.map((child) => <line key={child.person.id} x1={child.x} y1={branchY} x2={child.x} y2={childY} stroke={COLORS.ember2} strokeWidth="3" />)}
+                </g>;
               })}
               {[...familyTree.positions.values()].map((position) => {
                 const central = position.person.id === network.focus.id;
