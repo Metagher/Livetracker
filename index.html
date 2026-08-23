@@ -4920,7 +4920,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
 
   // Sammelt wahrscheinliche Familienbeziehungen, die sich aus einer neuen
   // Eltern-/Kind-Verbindung ergeben. Bestehende Verbindungen werden nie ersetzt.
-  const inferredRelationships = (sourcePersons, personId, targetId, type) => {
+  const legacyInferredRelationships = (sourcePersons, personId, targetId, type) => {
     if (type !== "parent" && type !== "child") return [];
     const parentId = type === "parent" ? personId : targetId;
     const childId = type === "parent" ? targetId : personId;
@@ -4954,6 +4954,80 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     (child.relationships || []).filter((relationship) => relationship.type === "parent").forEach((relationship) => {
       suggest(parentId, relationship.personId, "grandparent", `${child.name} ist als Elternteil dieser Person eingetragen.`);
     });
+    return suggestions;
+  };
+
+  const RELATIONSHIP_COMPOSITIONS = {
+    "parent|parent": "grandparent",
+    "child|child": "grandchild",
+    "sibling|parent": "auntUncle",
+    "child|sibling": "nibling",
+    "sibling|child": "child",
+    "parent|sibling": "parent",
+    "child|auntUncle": "cousin",
+    "nibling|parent": "cousin",
+    "auntUncle|child": "sibling",
+    "parent|nibling": "sibling",
+    "sibling|nibling": "nibling",
+    "nibling|sibling": "nibling",
+    "child|grandparent": "auntUncle",
+  };
+
+  // Prüft Beziehungsketten A -> B -> C rund um die gerade hinzugefügte
+  // Verbindung. Jede Ableitung bleibt wegen möglicher Patchwork-, Halb- oder
+  // Stiefbeziehungen ein einzeln zu bestätigender Vorschlag.
+  const inferredRelationships = (sourcePersons, personId, targetId, type) => {
+    const byId = new Map(sourcePersons.map((person) => [person.id, person]));
+    if (!byId.has(personId) || !byId.has(targetId)) return [];
+    const hasConnection = (aId, bId) => (byId.get(aId)?.relationships || []).some((relationship) => relationship.personId === bId);
+    const suggestions = [];
+    const seen = new Set();
+    const suggest = (sourceId, destinationId, suggestedType, reason) => {
+      const key = [sourceId, destinationId].sort().join("|");
+      if (sourceId === destinationId || seen.has(key) || hasConnection(sourceId, destinationId)) return;
+      seen.add(key);
+      suggestions.push({ personId: sourceId, targetId: destinationId, type: suggestedType, reason });
+    };
+    const compose = (firstFrom, middleId, firstType, secondTo, secondType) => {
+      const resultType = RELATIONSHIP_COMPOSITIONS[`${firstType}|${secondType}`];
+      if (!resultType) return;
+      const firstName = byId.get(firstFrom)?.name || "Person 1";
+      const middleName = byId.get(middleId)?.name || "die verbundene Person";
+      const secondName = byId.get(secondTo)?.name || "Person 2";
+      suggest(firstFrom, secondTo, resultType, `${firstName} ist „${relationshipLabel(firstType)}“ ${middleName}; ${middleName} ist „${relationshipLabel(secondType)}“ ${secondName}.`);
+    };
+
+    // Die neue Kante in beiden Richtungen sowohl am Anfang als auch am Ende
+    // einer Zweierkette prüfen. Bestätigte Ergebnisse werden anschließend
+    // erneut geprüft, wodurch auch Cousin-/Onkel-Ketten über mehrere Schritte entstehen.
+    const newEdges = [
+      { from: personId, to: targetId, type },
+      { from: targetId, to: personId, type: inverseRelationshipKey(type) },
+    ];
+    newEdges.forEach((edge) => {
+      (byId.get(edge.to)?.relationships || []).forEach((nextRelationship) => {
+        if (nextRelationship.personId !== edge.from) compose(edge.from, edge.to, edge.type, nextRelationship.personId, nextRelationship.type);
+      });
+      sourcePersons.forEach((candidate) => (candidate.relationships || []).forEach((previousRelationship) => {
+        if (previousRelationship.personId === edge.from && candidate.id !== edge.to) {
+          compose(candidate.id, edge.from, previousRelationship.type, edge.to, edge.type);
+        }
+      }));
+    });
+
+    // Partner als möglicher weiterer Elternteil sowie Kinder desselben
+    // Elternteils als mögliche Geschwister sind keine sichere Transitivität.
+    if (type === "parent" || type === "child") {
+      const parentId = type === "parent" ? personId : targetId;
+      const childId = type === "parent" ? targetId : personId;
+      const parent = byId.get(parentId);
+      (parent.relationships || []).filter((relationship) => relationship.type === "partner").forEach((relationship) => {
+        suggest(relationship.personId, childId, "parent", `${byId.get(relationship.personId)?.name || "Die Partnerperson"} ist mit ${parent.name} verbunden.`);
+      });
+      (parent.relationships || []).filter((relationship) => relationship.type === "parent" && relationship.personId !== childId).forEach((relationship) => {
+        suggest(childId, relationship.personId, "sibling", `Beide sind als Kinder von ${parent.name} eingetragen.`);
+      });
+    }
     return suggestions;
   };
 
@@ -5584,6 +5658,42 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     return { focus, layers, hasMore };
   }, [byId, focusId, depth]);
 
+  const radialNetwork = useMemo(() => {
+    if (!network.focus) return { size: 520, positions: new Map(), treeEdges: [], crossEdges: [] };
+    const radii = [];
+    let previousRadius = 0;
+    network.layers.forEach((layer, index) => {
+      const count = layer?.length || 0;
+      const circumferenceRadius = count > 1 ? (count * 82) / (2 * Math.PI) : 0;
+      const radius = Math.max((index + 1) * 112, previousRadius + 92, circumferenceRadius + 35);
+      radii.push(radius);
+      previousRadius = radius;
+    });
+    const outerRadius = Math.max(160, radii[radii.length - 1] || 0);
+    const size = Math.max(520, Math.ceil((outerRadius + 95) * 2));
+    const center = size / 2;
+    const positions = new Map([[network.focus.id, { x: center, y: center, person: network.focus, level: 0 }]]);
+    const treeEdges = [];
+    network.layers.forEach((layer, levelIndex) => {
+      const count = layer?.length || 0;
+      (layer || []).forEach((item, itemIndex) => {
+        const angleOffset = levelIndex % 2 === 0 ? -Math.PI / 2 : -Math.PI / 2 + Math.PI / Math.max(1, count);
+        const angle = angleOffset + (itemIndex * Math.PI * 2) / Math.max(1, count);
+        const position = {
+          x: center + Math.cos(angle) * radii[levelIndex],
+          y: center + Math.sin(angle) * radii[levelIndex],
+          person: item.person,
+          level: levelIndex + 1,
+        };
+        positions.set(item.person.id, position);
+        treeEdges.push({ fromId: item.via.id, toId: item.person.id, type: item.type });
+      });
+    });
+    const treeKeys = new Set(treeEdges.map((edge) => [edge.fromId, edge.toId].sort().join("|")));
+    const crossEdges = edges.filter((edge) => positions.has(edge.source.id) && positions.has(edge.target.id) && !treeKeys.has([edge.source.id, edge.target.id].sort().join("|")));
+    return { size, center, positions, treeEdges, crossEdges, radii };
+  }, [network, edges]);
+
   const filteredEdges = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("de");
     return query ? edges.filter((edge) => `${edge.source.name} ${edge.target.name} ${relationshipLabel(edge.type)}`.toLocaleLowerCase("de").includes(query)) : edges;
@@ -5611,7 +5721,38 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
         </div>
         {!network.focus ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>Keine Person verfügbar.</div> : <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 14px", borderRadius: 12, background: (network.focus.color || COLORS.violet) + "18", border: `1px solid ${(network.focus.color || COLORS.violet)}66` }}><Avatar person={network.focus} size={36} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 10, fontWeight: 700, color: COLORS.ember2, textTransform: "uppercase" }}>Ausgangspunkt</div><div style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>{network.focus.name}</div></div><button onClick={() => onEditPerson(network.focus)} style={{ ...ghostBtn, padding: "7px 9px", fontSize: 11.5 }}><Pencil size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Bearbeiten</button></div>
-          {network.layers.map((layer, index) => layer?.length > 0 && <section key={index}><div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><span style={{ width: 22, height: 22, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", background: COLORS.bgSoft, color: COLORS.textMuted, fontFamily: "JetBrains Mono, monospace", fontSize: 10.5 }}>{index + 1}</span><span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase" }}>{index === 0 ? "Direkt verbunden" : `${index + 1}. Ebene`} · {layer.length} {layer.length === 1 ? "Person" : "Personen"}</span></div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>{layer.map((item) => <PersonCard key={item.person.id} item={item} />)}</div></section>)}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 10.5, color: COLORS.textFaint }}>
+            {network.layers.map((layer, index) => layer?.length > 0 && <span key={index} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: index === 0 ? COLORS.ember2 : COLORS.violet, opacity: Math.max(0.35, 1 - index * 0.18) }} />{index === 0 ? "Direkt" : `Ebene ${index + 1}`} · {layer.length}</span>)}
+            <span style={{ marginLeft: "auto" }}>Person antippen, um sie zu zentrieren</span>
+          </div>
+          {network.layers.some((layer) => layer?.length) && <div style={{ width: "100%", overflow: "auto", borderRadius: 12, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, maxHeight: "min(62vh, 680px)" }}>
+            <svg viewBox={`0 0 ${radialNetwork.size} ${radialNetwork.size}`} width={radialNetwork.size} height={radialNetwork.size} role="img" aria-label={`Beziehungsnetz von ${network.focus.name}`} style={{ display: "block", maxWidth: "none", margin: "0 auto" }}>
+              {radialNetwork.radii.map((radius, index) => <circle key={index} cx={radialNetwork.center} cy={radialNetwork.center} r={radius} fill="none" stroke={COLORS.borderSoft} strokeWidth="1" strokeDasharray="4 7" />)}
+              {radialNetwork.crossEdges.map((edge) => {
+                const from = radialNetwork.positions.get(edge.source.id);
+                const to = radialNetwork.positions.get(edge.target.id);
+                return <line key={[edge.source.id, edge.target.id].sort().join("|")} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={COLORS.textFaint} strokeWidth="1" strokeDasharray="3 5" opacity="0.38" />;
+              })}
+              {radialNetwork.treeEdges.map((edge) => {
+                const from = radialNetwork.positions.get(edge.fromId);
+                const to = radialNetwork.positions.get(edge.toId);
+                return from && to ? <line key={`${edge.fromId}|${edge.toId}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={COLORS.border} strokeWidth="2" opacity="0.9" /> : null;
+              })}
+              {[...radialNetwork.positions.values()].map((position) => {
+                const central = position.level === 0;
+                const nodeColor = position.person.color || COLORS.violet;
+                const displayName = position.person.name.length > 18 ? position.person.name.slice(0, 17) + "…" : position.person.name;
+                return <g key={position.person.id} onClick={() => setFocusId(position.person.id)} style={{ cursor: "pointer" }}>
+                  <title>{position.person.name}{central ? " · Mittelpunkt" : " · antippen zum Zentrieren"}</title>
+                  <circle cx={position.x} cy={position.y} r={central ? 31 : 25} fill={COLORS.surface} stroke={nodeColor} strokeWidth={central ? 4 : 2.5} />
+                  <circle cx={position.x} cy={position.y} r={central ? 23 : 18} fill={nodeColor + "2b"} />
+                  <text x={position.x} y={position.y + 4} textAnchor="middle" fill={nodeColor} fontSize={central ? 14 : 12} fontWeight="700">{(position.person.name || "?").trim().charAt(0).toUpperCase()}</text>
+                  <rect x={position.x - 48} y={position.y + (central ? 37 : 31)} width="96" height="21" rx="7" fill={COLORS.surfaceRaised} stroke={COLORS.borderSoft} />
+                  <text x={position.x} y={position.y + (central ? 51 : 45)} textAnchor="middle" fill={COLORS.text} fontSize="10.5" fontWeight={central ? "700" : "600"}>{displayName}</text>
+                </g>;
+              })}
+            </svg>
+          </div>}
           {network.layers.every((layer) => !layer?.length) && <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 18 }}>Für diese Person sind noch keine Verbindungen eingetragen.</div>}
           {network.hasMore && <div style={{ fontSize: 11.5, color: COLORS.textFaint, textAlign: "center" }}>Weitere Personen sind verbunden. Erhöhe die Anzahl der Ebenen, um sie anzuzeigen.</div>}
         </div>}
