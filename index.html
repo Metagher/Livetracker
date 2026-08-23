@@ -1644,6 +1644,7 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
                 name: name.trim(), info: info.trim(), groups: personGroupIds, category: personGroupIds[0] || "", birthday: birthday || null, birthdayYearConfirmed: birthday ? birthdayYearConfirmed : false, color, meetingTrackingEnabled,
                 meetings: initial?.meetings || [],
                 relationships,
+                dismissedRelationshipSuggestions: (livePerson || initial)?.dismissedRelationshipSuggestions || [],
                 createdAt: initial?.createdAt || todayKey(),
               })}
               style={{ ...primaryBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
@@ -4843,6 +4844,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     // Entfernt die Person + räumt Verbindungen auf, die von anderen Personen noch auf sie zeigen
     const next = persons.filter((p) => p.id !== id).map((p) => ({
       ...p, relationships: (p.relationships || []).filter((r) => r.personId !== id),
+      dismissedRelationshipSuggestions: (p.dismissedRelationshipSuggestions || []).filter((suggestion) => suggestion.personId !== id),
     }));
     persistPersons(next);
     setShowModal(false);
@@ -4906,11 +4908,19 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     const next = sourcePersons.map((p) => {
       if (p.id === personId) {
         const rels = (p.relationships || []).filter((r) => r.personId !== targetId);
-        return { ...p, relationships: [...rels, { personId: targetId, type }] };
+        return {
+          ...p,
+          relationships: [...rels, { personId: targetId, type }],
+          dismissedRelationshipSuggestions: (p.dismissedRelationshipSuggestions || []).filter((suggestion) => suggestion.personId !== targetId),
+        };
       }
       if (p.id === targetId) {
         const rels = (p.relationships || []).filter((r) => r.personId !== personId);
-        return { ...p, relationships: [...rels, { personId, type: inverseType }] };
+        return {
+          ...p,
+          relationships: [...rels, { personId, type: inverseType }],
+          dismissedRelationshipSuggestions: (p.dismissedRelationshipSuggestions || []).filter((suggestion) => suggestion.personId !== personId),
+        };
       }
       return p;
     });
@@ -4980,11 +4990,16 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     const byId = new Map(sourcePersons.map((person) => [person.id, person]));
     if (!byId.has(personId) || !byId.has(targetId)) return [];
     const hasConnection = (aId, bId) => (byId.get(aId)?.relationships || []).some((relationship) => relationship.personId === bId);
+    const wasDismissed = (aId, bId, suggestedType) => {
+      const direct = (byId.get(aId)?.dismissedRelationshipSuggestions || []).some((suggestion) => suggestion.personId === bId && suggestion.type === suggestedType);
+      const inverse = (byId.get(bId)?.dismissedRelationshipSuggestions || []).some((suggestion) => suggestion.personId === aId && suggestion.type === inverseRelationshipKey(suggestedType));
+      return direct || inverse;
+    };
     const suggestions = [];
     const seen = new Set();
     const suggest = (sourceId, destinationId, suggestedType, reason) => {
       const key = [sourceId, destinationId].sort().join("|");
-      if (sourceId === destinationId || seen.has(key) || hasConnection(sourceId, destinationId)) return;
+      if (sourceId === destinationId || seen.has(key) || hasConnection(sourceId, destinationId) || wasDismissed(sourceId, destinationId, suggestedType)) return;
       seen.add(key);
       suggestions.push({ personId: sourceId, targetId: destinationId, type: suggestedType, reason });
     };
@@ -5045,6 +5060,15 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     const current = relationshipSuggestions[0];
     if (!current) return;
     if (!accepted) {
+      const inverseType = inverseRelationshipKey(current.type);
+      const nextPersons = persons.map((person) => {
+        if (person.id !== current.personId && person.id !== current.targetId) return person;
+        const otherId = person.id === current.personId ? current.targetId : current.personId;
+        const rejectedType = person.id === current.personId ? current.type : inverseType;
+        const existing = (person.dismissedRelationshipSuggestions || []).filter((suggestion) => !(suggestion.personId === otherId && suggestion.type === rejectedType));
+        return { ...person, dismissedRelationshipSuggestions: [...existing, { personId: otherId, type: rejectedType }] };
+      });
+      persistPersons(nextPersons);
       setRelationshipSuggestions((suggestions) => suggestions.slice(1));
       return;
     }
@@ -5631,6 +5655,19 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     return 3;
   };
   const relationshipTier = (type) => ["direkt", "nah", "erweitert", "sonstig"][relationshipPriority(type)];
+  const relationshipColor = (typeOrPriority) => {
+    const priority = typeof typeOrPriority === "number" ? typeOrPriority : relationshipPriority(typeOrPriority);
+    return [COLORS.ember2, COLORS.violet, COLORS.mint, COLORS.textFaint][priority] || COLORS.textFaint;
+  };
+  const generationDelta = (type) => {
+    if (type === "child") return -1;
+    if (type === "grandchild") return -2;
+    if (type === "nibling") return -1;
+    if (type === "parent") return 1;
+    if (type === "grandparent") return 2;
+    if (type === "auntUncle") return 1;
+    return 0;
+  };
   useEffect(() => { if (!byId.has(focusId)) setFocusId(persons[0]?.id || ""); }, [byId, focusId, persons]);
 
   const edges = useMemo(() => {
@@ -5648,7 +5685,7 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     const focus = byId.get(focusId);
     if (!focus) return { focus: null, layers: [], hasMore: false };
     const visited = new Set([focus.id]);
-    const queue = [{ person: focus, level: 0, path: [focus.name] }];
+    const queue = [{ person: focus, level: 0, generation: 0, path: [focus.name] }];
     const layers = [];
     let hasMore = false;
     while (queue.length) {
@@ -5660,7 +5697,7 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
       nextRelationships.forEach((relationship) => {
         const person = byId.get(relationship.personId);
         visited.add(person.id);
-        const item = { person, via: current.person, type: relationship.type, priority: relationshipPriority(relationship.type), level: current.level + 1, path: [...current.path, person.name] };
+        const item = { person, via: current.person, type: relationship.type, priority: relationshipPriority(relationship.type), level: current.level + 1, generation: current.generation + generationDelta(relationship.type), path: [...current.path, person.name] };
         if (!layers[item.level - 1]) layers[item.level - 1] = [];
         layers[item.level - 1].push(item);
         queue.push(item);
@@ -5706,6 +5743,7 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
           y: center + Math.sin(angle) * radii[levelIndex],
           person: item.person,
           level: levelIndex + 1,
+          priority: item.priority,
         };
         positions.set(item.person.id, position);
         treeEdges.push({ fromId: item.via.id, toId: item.person.id, type: item.type });
@@ -5719,27 +5757,87 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     return { size, center, positions, treeEdges, displayEdges, radii };
   }, [network, edges]);
 
+  const familyTree = useMemo(() => {
+    if (!network.focus) return { width: 560, height: 420, positions: new Map(), displayEdges: [], rows: [], focusX: 280, focusY: 210 };
+    const items = [
+      { person: network.focus, generation: 0, level: 0, priority: -1, type: null, via: null },
+      ...network.layers.flatMap((layer) => layer || []),
+    ];
+    const grouped = new Map();
+    items.forEach((item) => {
+      if (!grouped.has(item.generation)) grouped.set(item.generation, []);
+      grouped.get(item.generation).push(item);
+    });
+    const generations = [...grouped.keys()].sort((a, b) => a - b);
+    const maxRowCount = Math.max(1, ...generations.map((generation) => grouped.get(generation).length));
+    const nodeSpacing = 148;
+    const rowSpacing = 132;
+    const width = Math.max(560, maxRowCount * nodeSpacing + 150);
+    const height = Math.max(420, (generations.length - 1) * rowSpacing + 120);
+    const centerX = width / 2;
+    const positions = new Map();
+    const rows = [];
+
+    generations.forEach((generation, rowIndex) => {
+      const y = 60 + rowIndex * rowSpacing;
+      const rowItems = [...grouped.get(generation)].sort((a, b) => {
+        if (a.person.id === network.focus.id) return 0;
+        if (b.person.id === network.focus.id) return 0;
+        return a.priority - b.priority || (a.via?.name || "").localeCompare(b.via?.name || "", "de") || a.person.name.localeCompare(b.person.name, "de");
+      });
+      const focusItem = rowItems.find((item) => item.person.id === network.focus.id);
+      const otherItems = rowItems.filter((item) => item.person.id !== network.focus.id);
+      if (focusItem) positions.set(focusItem.person.id, { x: centerX, y, ...focusItem });
+      const leftItems = [];
+      const rightItems = [];
+      otherItems.forEach((item, index) => {
+        const prefersRight = item.type === "partner" || item.type === "friend";
+        const prefersLeft = item.type === "sibling" || item.type === "cousin";
+        if (prefersRight && rightItems.length <= leftItems.length) rightItems.push(item);
+        else if (prefersLeft && leftItems.length <= rightItems.length) leftItems.push(item);
+        else (leftItems.length <= rightItems.length ? leftItems : rightItems).push(item);
+      });
+      if (!focusItem) {
+        rowItems.forEach((item, index) => positions.set(item.person.id, { x: centerX + (index - (rowItems.length - 1) / 2) * nodeSpacing, y, ...item }));
+      } else {
+        leftItems.forEach((item, index) => positions.set(item.person.id, { x: centerX - (index + 1) * nodeSpacing, y, ...item }));
+        rightItems.forEach((item, index) => positions.set(item.person.id, { x: centerX + (index + 1) * nodeSpacing, y, ...item }));
+      }
+      rows.push({ generation, y, count: rowItems.length });
+    });
+
+    const displayEdges = edges
+      .filter((edge) => positions.has(edge.source.id) && positions.has(edge.target.id))
+      .map((edge) => ({ ...edge, priority: relationshipPriority(edge.type) }))
+      .sort((a, b) => b.priority - a.priority);
+    const focusPosition = positions.get(network.focus.id) || { x: centerX, y: height / 2 };
+    return { width, height, positions, displayEdges, rows, focusX: focusPosition.x, focusY: focusPosition.y };
+  }, [network, edges]);
+
   // Nach Fokus-, Tiefen- oder Zoomänderungen liegt die Fokusperson auch auf
   // kleinen Displays wieder in der Mitte des sichtbaren Ausschnitts.
   useEffect(() => {
     const container = networkScrollRef.current;
     if (!container || mode !== "explore") return;
     const frame = requestAnimationFrame(() => {
-      container.scrollLeft = Math.max(0, (container.scrollWidth - container.clientWidth) / 2);
-      container.scrollTop = Math.max(0, (container.scrollHeight - container.clientHeight) / 2);
+      container.scrollLeft = Math.max(0, familyTree.focusX * networkZoom - container.clientWidth / 2);
+      container.scrollTop = Math.max(0, familyTree.focusY * networkZoom - container.clientHeight / 2);
     });
     return () => cancelAnimationFrame(frame);
-  }, [focusId, depth, networkZoom, mode, radialNetwork.size]);
+  }, [focusId, depth, networkZoom, mode, familyTree.width, familyTree.height]);
 
   const filteredEdges = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("de");
     return query ? edges.filter((edge) => `${edge.source.name} ${edge.target.name} ${relationshipLabel(edge.type)}`.toLocaleLowerCase("de").includes(query)) : edges;
   }, [edges, search]);
 
-  const Avatar = ({ person, size = 30 }) => <span style={{ width: size, height: size, borderRadius: "50%", flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", background: (person.color || COLORS.violet) + "25", color: person.color || COLORS.violet, fontWeight: 700, fontSize: 11 }}>{(person.name || "?").trim().charAt(0).toUpperCase()}</span>;
+  const Avatar = ({ person, size = 30, connectionType = null }) => {
+    const color = connectionType === null ? COLORS.textMuted : relationshipColor(connectionType);
+    return <span style={{ width: size, height: size, borderRadius: "50%", flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", background: color + "25", color, fontWeight: 700, fontSize: 11 }}>{(person.name || "?").trim().charAt(0).toUpperCase()}</span>;
+  };
   const PersonCard = ({ item }) => <div style={{ minWidth: 0, padding: "11px 12px", borderRadius: 11, background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}` }}>
     <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-      <Avatar person={item.person} />
+      <Avatar person={item.person} connectionType={item.type} />
       <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.person.name}</div><div style={{ fontSize: 10.5, color: COLORS.textFaint, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>über {item.via.name} · {relationshipLabel(item.type)}</div></div>
       <IconButton onClick={() => onEditPerson(item.person)} title="Person bearbeiten"><Pencil size={13} /></IconButton>
     </div>
@@ -5748,8 +5846,8 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
 
   return <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
     <div style={{ ...modalStyle, maxWidth: 820 }} onClick={(event) => event.stopPropagation()}><div style={{ ...modalBodyStyle, padding: isMobile ? 14 : 24 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 16 }}><div><h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2><p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Beziehungen übersichtlich nach Entfernungsebenen.</p></div><IconButton onClick={onClose}><X size={16} /></IconButton></div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}><ToggleChip active={mode === "explore"} onClick={() => setMode("explore")}>Netz erkunden</ToggleChip><ToggleChip active={mode === "list"} onClick={() => setMode("list")}>Alle Beziehungen</ToggleChip></div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 16 }}><div><h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2><p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Familienbeziehungen nach Generationen und Ästen.</p></div><IconButton onClick={onClose}><X size={16} /></IconButton></div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}><ToggleChip active={mode === "explore"} onClick={() => setMode("explore")}>Stammbaum</ToggleChip><ToggleChip active={mode === "list"} onClick={() => setMode("list")}>Alle Beziehungen</ToggleChip></div>
 
       {mode === "explore" ? <>
         <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap", marginBottom: 18 }}>
@@ -5757,15 +5855,15 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
           <div><label style={labelStyle}>Ebenen</label><div style={{ display: "flex", gap: 5 }}>{[1, 2, 3, 4].map((value) => <ToggleChip key={value} active={depth === value} onClick={() => setDepth(value)}>{value}</ToggleChip>)}</div></div>
         </div>
         {!network.focus ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>Keine Person verfügbar.</div> : <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 14px", borderRadius: 12, background: (network.focus.color || COLORS.violet) + "18", border: `1px solid ${(network.focus.color || COLORS.violet)}66` }}><Avatar person={network.focus} size={36} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 10, fontWeight: 700, color: COLORS.ember2, textTransform: "uppercase" }}>Ausgangspunkt</div><div style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>{network.focus.name}</div></div><button onClick={() => onEditPerson(network.focus)} style={{ ...ghostBtn, padding: "7px 9px", fontSize: 11.5 }}><Pencil size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Bearbeiten</button></div>
+          <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 14px", borderRadius: 12, background: COLORS.textMuted + "12", border: `1px solid ${COLORS.border}` }}><Avatar person={network.focus} size={36} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 10, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>Ausgangspunkt</div><div style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>{network.focus.name}</div></div><button onClick={() => onEditPerson(network.focus)} style={{ ...ghostBtn, padding: "7px 9px", fontSize: 11.5 }}><Pencil size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Bearbeiten</button></div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 10.5, color: COLORS.textFaint }}>
-            {network.layers.map((layer, index) => layer?.length > 0 && <span key={index} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: index === 0 ? COLORS.ember2 : COLORS.violet, opacity: Math.max(0.35, 1 - index * 0.18) }} />{index === 0 ? "Direkt" : `Ebene ${index + 1}`} · {layer.length}</span>)}
+            {network.layers.map((layer, index) => layer?.length > 0 && <span key={index} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><span style={{ width: 17, height: 17, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", background: COLORS.surfaceRaised, color: COLORS.textMuted, fontFamily: "JetBrains Mono, monospace", fontSize: 8.5 }}>{index + 1}</span>{index === 0 ? "Direkt" : `Ebene ${index + 1}`} · {layer.length}</span>)}
             <span style={{ marginLeft: "auto" }}>Person antippen, um sie zu zentrieren</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 10.5, color: COLORS.textFaint, marginTop: -10 }}>
             <span style={{ color: COLORS.ember2 }}>━━ direkte Familie</span>
             <span style={{ color: COLORS.violet }}>━━ nahe Familie</span>
-            <span>┄┄ erweiterte Familie</span>
+            <span style={{ color: COLORS.mint }}>┄┄ erweiterte Familie</span>
             <span style={{ opacity: 0.65 }}>┈┈ sonstige</span>
           </div>
           {network.layers.some((layer) => layer?.length) && <>
@@ -5778,27 +5876,38 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
               </div>
             </div>
             <div ref={networkScrollRef} style={{ width: "100%", overflow: "auto", WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y", overscrollBehavior: "contain", borderRadius: 12, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, maxHeight: isMobile ? "56vh" : "min(62vh, 680px)" }}>
-            <svg viewBox={`0 0 ${radialNetwork.size} ${radialNetwork.size}`} width={radialNetwork.size * networkZoom} height={radialNetwork.size * networkZoom} role="img" aria-label={`Beziehungsnetz von ${network.focus.name}`} style={{ display: "block", maxWidth: "none", margin: "0 auto" }}>
-              {radialNetwork.radii.map((radius, index) => <circle key={index} cx={radialNetwork.center} cy={radialNetwork.center} r={radius} fill="none" stroke={COLORS.borderSoft} strokeWidth="1" strokeDasharray="4 7" />)}
-              {radialNetwork.displayEdges.map((edge) => {
-                const from = radialNetwork.positions.get(edge.source.id);
-                const to = radialNetwork.positions.get(edge.target.id);
-                const stroke = edge.priority === 0 ? COLORS.ember2 : edge.priority === 1 ? COLORS.violet : COLORS.textFaint;
+            <svg viewBox={`0 0 ${familyTree.width} ${familyTree.height}`} width={familyTree.width * networkZoom} height={familyTree.height * networkZoom} role="img" aria-label={`Stammbaum von ${network.focus.name}`} style={{ display: "block", maxWidth: "none", margin: "0 auto" }}>
+              {familyTree.rows.map((row) => {
+                const label = row.generation === 0 ? "Fokus-Ebene" : row.generation === -1 ? "Eltern-Ebene" : row.generation === -2 ? "Großeltern-Ebene" : row.generation === 1 ? "Kinder-Ebene" : row.generation === 2 ? "Enkel-Ebene" : row.generation < 0 ? `${Math.abs(row.generation)} Generationen darüber` : `${row.generation} Generationen darunter`;
+                return <g key={row.generation}>
+                  <line x1="18" y1={row.y} x2={familyTree.width - 18} y2={row.y} stroke={row.generation === 0 ? COLORS.border : COLORS.borderSoft} strokeWidth="1" strokeDasharray={row.generation === 0 ? undefined : "4 7"} />
+                  <rect x="18" y={row.y - 53} width="118" height="20" rx="7" fill={COLORS.surfaceRaised} />
+                  <text x="27" y={row.y - 39} fill={row.generation === 0 ? COLORS.textMuted : COLORS.textFaint} fontSize="10" fontWeight="600">{label}</text>
+                </g>;
+              })}
+              {familyTree.displayEdges.map((edge) => {
+                const from = familyTree.positions.get(edge.source.id);
+                const to = familyTree.positions.get(edge.target.id);
+                const stroke = relationshipColor(edge.priority);
                 const strokeWidth = edge.priority === 0 ? 3.2 : edge.priority === 1 ? 2.2 : edge.priority === 2 ? 1.45 : 1;
                 const dash = edge.priority === 2 ? "5 4" : edge.priority === 3 ? "2 5" : undefined;
-                return <line key={[edge.source.id, edge.target.id].sort().join("|")} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dash} opacity={edge.isTreeEdge ? 0.95 : edge.priority <= 1 ? 0.72 : 0.5}><title>{edge.source.name} · {relationshipLabel(edge.type)} · {edge.target.name} ({relationshipTier(edge.type)})</title></line>;
+                const sameGeneration = Math.abs(from.y - to.y) < 2;
+                const middleY = (from.y + to.y) / 2;
+                const path = sameGeneration
+                  ? `M ${from.x} ${from.y} C ${from.x} ${from.y - 42}, ${to.x} ${to.y - 42}, ${to.x} ${to.y}`
+                  : `M ${from.x} ${from.y} L ${from.x} ${middleY} L ${to.x} ${middleY} L ${to.x} ${to.y}`;
+                return <path key={[edge.source.id, edge.target.id].sort().join("|")} d={path} fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dash} opacity={edge.priority <= 1 ? 0.85 : 0.56} strokeLinejoin="round"><title>{edge.source.name} · {relationshipLabel(edge.type)} · {edge.target.name} ({relationshipTier(edge.type)})</title></path>;
               })}
-              {[...radialNetwork.positions.values()].map((position) => {
-                const central = position.level === 0;
-                const nodeColor = position.person.color || COLORS.violet;
+              {[...familyTree.positions.values()].map((position) => {
+                const central = position.person.id === network.focus.id;
+                const nodeColor = central ? COLORS.textMuted : relationshipColor(position.priority);
                 const displayName = position.person.name.length > 18 ? position.person.name.slice(0, 17) + "…" : position.person.name;
                 return <g key={position.person.id} onClick={() => setFocusId(position.person.id)} style={{ cursor: "pointer" }}>
                   <title>{position.person.name}{central ? " · Mittelpunkt" : " · antippen zum Zentrieren"}</title>
-                  <circle cx={position.x} cy={position.y} r={central ? 31 : 25} fill={COLORS.surface} stroke={nodeColor} strokeWidth={central ? 4 : 2.5} />
-                  <circle cx={position.x} cy={position.y} r={central ? 23 : 18} fill={nodeColor + "2b"} />
-                  <text x={position.x} y={position.y + 4} textAnchor="middle" fill={nodeColor} fontSize={central ? 14 : 12} fontWeight="700">{(position.person.name || "?").trim().charAt(0).toUpperCase()}</text>
-                  <rect x={position.x - 48} y={position.y + (central ? 37 : 31)} width="96" height="21" rx="7" fill={COLORS.surfaceRaised} stroke={COLORS.borderSoft} />
-                  <text x={position.x} y={position.y + (central ? 51 : 45)} textAnchor="middle" fill={COLORS.text} fontSize="10.5" fontWeight={central ? "700" : "600"}>{displayName}</text>
+                  <rect x={position.x - 58} y={position.y - 27} width="116" height="54" rx="11" fill={COLORS.surface} stroke={nodeColor} strokeWidth={central ? 3.5 : 2.2} />
+                  <circle cx={position.x - 38} cy={position.y} r="14" fill={nodeColor + "2b"} />
+                  <text x={position.x - 38} y={position.y + 4} textAnchor="middle" fill={nodeColor} fontSize="11.5" fontWeight="700">{(position.person.name || "?").trim().charAt(0).toUpperCase()}</text>
+                  <text x={position.x - 17} y={position.y + 4} fill={COLORS.text} fontSize="10.5" fontWeight={central ? "700" : "600"}>{displayName}</text>
                 </g>;
               })}
             </svg>
@@ -5808,7 +5917,7 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
         </div>}
       </> : <>
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Person oder Beziehung suchen …" style={{ ...inputStyle, marginBottom: 14 }} />
-        {filteredEdges.length === 0 ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>{edges.length ? "Keine passende Verbindung gefunden." : "Noch keine Verbindungen eingetragen."}</div> : <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>{filteredEdges.map((edge) => <div key={[edge.source.id, edge.target.id].sort().join("|")} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)", alignItems: "center", gap: 8, padding: "10px 11px", background: COLORS.bgSoft, borderRadius: 10 }}><button onClick={() => { setFocusId(edge.source.id); setMode("explore"); }} style={{ border: "none", background: "transparent", color: COLORS.text, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: 7, minWidth: 0, textAlign: "left" }}><Avatar person={edge.source} size={26} /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 600 }}>{edge.source.name}</span></button><span style={{ fontSize: 10.5, color: COLORS.textFaint, textAlign: "center" }}>{relationshipLabel(edge.type)}</span><button onClick={() => { setFocusId(edge.target.id); setMode("explore"); }} style={{ border: "none", background: "transparent", color: COLORS.text, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 7, minWidth: 0 }}><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 600 }}>{edge.target.name}</span><Avatar person={edge.target} size={26} /></button></div>)}</div>}
+        {filteredEdges.length === 0 ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>{edges.length ? "Keine passende Verbindung gefunden." : "Noch keine Verbindungen eingetragen."}</div> : <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>{filteredEdges.map((edge) => <div key={[edge.source.id, edge.target.id].sort().join("|")} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)", alignItems: "center", gap: 8, padding: "10px 11px", background: COLORS.bgSoft, borderRadius: 10 }}><button onClick={() => { setFocusId(edge.source.id); setMode("explore"); }} style={{ border: "none", background: "transparent", color: COLORS.text, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: 7, minWidth: 0, textAlign: "left" }}><Avatar person={edge.source} size={26} connectionType={edge.type} /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 600 }}>{edge.source.name}</span></button><span style={{ fontSize: 10.5, color: relationshipColor(edge.type), textAlign: "center" }}>{relationshipLabel(edge.type)}</span><button onClick={() => { setFocusId(edge.target.id); setMode("explore"); }} style={{ border: "none", background: "transparent", color: COLORS.text, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 7, minWidth: 0 }}><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 600 }}>{edge.target.name}</span><Avatar person={edge.target} size={26} connectionType={edge.type} /></button></div>)}</div>}
       </>}
     </div></div>
   </div>;
