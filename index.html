@@ -4824,6 +4824,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   const [networkGroup, setNetworkGroup] = useState(null);
   const [pendingMeeting, setPendingMeeting] = useState(null);
   const [pendingGroupMeeting, setPendingGroupMeeting] = useState(null);
+  const [relationshipSuggestions, setRelationshipSuggestions] = useState([]);
 
   const trackedPersons = persons.filter((p) => p.meetingTrackingEnabled !== false);
   const totalMeetings = trackedPersons.reduce((s, p) => s + (p.meetings || []).length, 0);
@@ -4897,12 +4898,12 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     persistPersons(next);
   };
 
-  // Trägt eine Verbindung bidirektional ein: bei personId als `type`, bei targetId
-  // automatisch als Gegenstück (z. B. "Elternteil von" <-> "Kind von").
-  const addRelationship = (personId, targetId, type) => {
+  // Baut eine bidirektionale Verbindung auf, ohne mögliche Folgebeziehungen zu
+  // prüfen. Diese Variante wird auch für ausdrücklich bestätigte Vorschläge genutzt.
+  const addRelationshipDirectly = (personId, targetId, type, sourcePersons = persons) => {
     if (!targetId || personId === targetId) return;
     const inverseType = inverseRelationshipKey(type);
-    const next = persons.map((p) => {
+    const next = sourcePersons.map((p) => {
       if (p.id === personId) {
         const rels = (p.relationships || []).filter((r) => r.personId !== targetId);
         return { ...p, relationships: [...rels, { personId: targetId, type }] };
@@ -4914,6 +4915,78 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
       return p;
     });
     persistPersons(next);
+    return next;
+  };
+
+  // Sammelt wahrscheinliche Familienbeziehungen, die sich aus einer neuen
+  // Eltern-/Kind-Verbindung ergeben. Bestehende Verbindungen werden nie ersetzt.
+  const inferredRelationships = (sourcePersons, personId, targetId, type) => {
+    if (type !== "parent" && type !== "child") return [];
+    const parentId = type === "parent" ? personId : targetId;
+    const childId = type === "parent" ? targetId : personId;
+    const byId = new Map(sourcePersons.map((person) => [person.id, person]));
+    const parent = byId.get(parentId);
+    const child = byId.get(childId);
+    if (!parent || !child) return [];
+    const hasConnection = (aId, bId) => (byId.get(aId)?.relationships || []).some((relationship) => relationship.personId === bId);
+    const suggestions = [];
+    const seen = new Set();
+    const suggest = (sourceId, destinationId, suggestedType, reason) => {
+      const key = [sourceId, destinationId].sort().join("|");
+      if (sourceId === destinationId || seen.has(key) || hasConnection(sourceId, destinationId)) return;
+      seen.add(key);
+      suggestions.push({ personId: sourceId, targetId: destinationId, type: suggestedType, reason });
+    };
+
+    // Partner des Elternteils könnten ebenfalls Elternteil des Kindes sein.
+    (parent.relationships || []).filter((relationship) => relationship.type === "partner").forEach((relationship) => {
+      suggest(relationship.personId, childId, "parent", `${byId.get(relationship.personId)?.name || "Die Partnerperson"} ist mit ${parent.name} verbunden.`);
+    });
+    // Bereits vorhandene Kinder desselben Elternteils könnten Geschwister sein.
+    (parent.relationships || []).filter((relationship) => relationship.type === "parent" && relationship.personId !== childId).forEach((relationship) => {
+      suggest(childId, relationship.personId, "sibling", `Beide sind als Kinder von ${parent.name} eingetragen.`);
+    });
+    // Eltern des neuen Elternteils könnten Großeltern des Kindes sein.
+    (parent.relationships || []).filter((relationship) => relationship.type === "child").forEach((relationship) => {
+      suggest(relationship.personId, childId, "grandparent", `${byId.get(relationship.personId)?.name || "Die Person"} ist Elternteil von ${parent.name}.`);
+    });
+    // Hat das neue Kind selbst Kinder, könnte das neue Elternteil deren Großelternteil sein.
+    (child.relationships || []).filter((relationship) => relationship.type === "parent").forEach((relationship) => {
+      suggest(parentId, relationship.personId, "grandparent", `${child.name} ist als Elternteil dieser Person eingetragen.`);
+    });
+    return suggestions;
+  };
+
+  // Trägt die gewünschte Verbindung ein und stellt danach alle daraus
+  // abgeleiteten Vorschläge nacheinander zur Bestätigung bereit.
+  const addRelationship = (personId, targetId, type) => {
+    if (!targetId || personId === targetId) return;
+    const next = addRelationshipDirectly(personId, targetId, type);
+    if (!next) return;
+    const suggestions = inferredRelationships(next, personId, targetId, type);
+    if (suggestions.length) setRelationshipSuggestions((current) => [...current, ...suggestions]);
+  };
+
+  const answerRelationshipSuggestion = (accepted) => {
+    const current = relationshipSuggestions[0];
+    if (!current) return;
+    if (!accepted) {
+      setRelationshipSuggestions((suggestions) => suggestions.slice(1));
+      return;
+    }
+    const nextPersons = addRelationshipDirectly(current.personId, current.targetId, current.type);
+    const followUps = nextPersons ? inferredRelationships(nextPersons, current.personId, current.targetId, current.type) : [];
+    setRelationshipSuggestions((suggestions) => {
+      const combined = [...suggestions.slice(1), ...followUps];
+      const seen = new Set();
+      return combined.filter((suggestion) => {
+        const key = [suggestion.personId, suggestion.targetId].sort().join("|");
+        const alreadyConnected = (nextPersons?.find((person) => person.id === suggestion.personId)?.relationships || []).some((relationship) => relationship.personId === suggestion.targetId);
+        if (alreadyConnected || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    });
   };
 
   const removeRelationship = (personId, targetId) => {
@@ -5046,6 +5119,50 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
           onConfirm={confirmGroupMeeting}
         />
       )}
+
+      {relationshipSuggestions.length > 0 && (
+        <RelationshipSuggestionModal
+          suggestion={relationshipSuggestions[0]}
+          persons={persons}
+          remaining={relationshipSuggestions.length}
+          onAnswer={answerRelationshipSuggestion}
+        />
+      )}
+    </div>
+  );
+}
+
+function RelationshipSuggestionModal({ suggestion, persons, remaining, onAnswer }) {
+  const viewport = useVisualViewport();
+  const source = persons.find((person) => person.id === suggestion.personId);
+  const target = persons.find((person) => person.id === suggestion.targetId);
+  if (!source || !target) return null;
+
+  return (
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={() => onAnswer(false)}>
+      <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(event) => event.stopPropagation()}>
+      <div style={modalBodyStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 14 }}>
+          <div>
+            <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>Weitere Verbindung?</h2>
+            {remaining > 1 && <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: 4 }}>Noch {remaining - 1} weitere {remaining - 1 === 1 ? "Prüfung" : "Prüfungen"} danach</div>}
+          </div>
+          <IconButton onClick={() => onAnswer(false)}><X size={16} /></IconButton>
+        </div>
+
+        <div style={{ padding: "13px 14px", borderRadius: 11, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, marginBottom: 12 }}>
+          <div style={{ fontSize: 14, lineHeight: 1.55 }}>
+            Soll <strong>{source.name}</strong> ebenfalls als <strong>{relationshipLabel(suggestion.type)}</strong> <strong>{target.name}</strong> eingetragen werden?
+          </div>
+        </div>
+        <div style={{ fontSize: 11.5, color: COLORS.textFaint, lineHeight: 1.5, marginBottom: 18 }}>{suggestion.reason}</div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={() => onAnswer(false)} style={ghostBtn}>Nein</button>
+          <button onClick={() => onAnswer(true)} style={primaryBtn}>Ja, Verbindung eintragen</button>
+        </div>
+      </div>
+      </div>
     </div>
   );
 }
@@ -5318,7 +5435,7 @@ function MeetingHistory({ person, onAddMeeting, onDeleteMeeting }) {
    Verbindungen als beschriftete Linien dazwischen. Klick auf eine Person öffnet
    direkt deren Bearbeiten-Modal.
    ============================================================ */
-function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPerson }) {
+function LegacyPersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPerson }) {
   const viewport = useVisualViewport();
   const [viewMode, setViewMode] = useState("all");
   // Alle Verbindungspaare auf einmal (dedupliziert, da jede Verbindung bei
@@ -5419,6 +5536,91 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
       </div>
     </div>
   );
+}
+
+/* Fokusbasierter Explorer: kürzeste Beziehungswege werden in lesbaren Ebenen
+   statt als überlagerte Linien dargestellt. */
+function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPerson }) {
+  const viewport = useVisualViewport();
+  const [mode, setMode] = useState("explore");
+  const [focusId, setFocusId] = useState(() => persons.find((person) => (person.relationships || []).length)?.id || persons[0]?.id || "");
+  const [depth, setDepth] = useState(3);
+  const [search, setSearch] = useState("");
+  const byId = useMemo(() => new Map(persons.map((person) => [person.id, person])), [persons]);
+  useEffect(() => { if (!byId.has(focusId)) setFocusId(persons[0]?.id || ""); }, [byId, focusId, persons]);
+
+  const edges = useMemo(() => {
+    const seen = new Set();
+    return persons.flatMap((person) => (person.relationships || []).flatMap((relationship) => {
+      const other = byId.get(relationship.personId);
+      const key = [person.id, relationship.personId].sort().join("|");
+      if (!other || seen.has(key)) return [];
+      seen.add(key);
+      return [{ source: person, target: other, type: relationship.type }];
+    })).sort((a, b) => a.source.name.localeCompare(b.source.name, "de") || a.target.name.localeCompare(b.target.name, "de"));
+  }, [persons, byId]);
+
+  const network = useMemo(() => {
+    const focus = byId.get(focusId);
+    if (!focus) return { focus: null, layers: [], hasMore: false };
+    const visited = new Set([focus.id]);
+    const queue = [{ person: focus, level: 0, path: [focus.name] }];
+    const layers = [];
+    let hasMore = false;
+    while (queue.length) {
+      const current = queue.shift();
+      const nextRelationships = (current.person.relationships || []).filter((relationship) => byId.has(relationship.personId) && !visited.has(relationship.personId));
+      if (current.level >= depth) { if (nextRelationships.length) hasMore = true; continue; }
+      nextRelationships.forEach((relationship) => {
+        const person = byId.get(relationship.personId);
+        visited.add(person.id);
+        const item = { person, via: current.person, type: relationship.type, level: current.level + 1, path: [...current.path, person.name] };
+        if (!layers[item.level - 1]) layers[item.level - 1] = [];
+        layers[item.level - 1].push(item);
+        queue.push(item);
+      });
+    }
+    layers.forEach((layer) => layer.sort((a, b) => a.person.name.localeCompare(b.person.name, "de")));
+    return { focus, layers, hasMore };
+  }, [byId, focusId, depth]);
+
+  const filteredEdges = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase("de");
+    return query ? edges.filter((edge) => `${edge.source.name} ${edge.target.name} ${relationshipLabel(edge.type)}`.toLocaleLowerCase("de").includes(query)) : edges;
+  }, [edges, search]);
+
+  const Avatar = ({ person, size = 30 }) => <span style={{ width: size, height: size, borderRadius: "50%", flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", background: (person.color || COLORS.violet) + "25", color: person.color || COLORS.violet, fontWeight: 700, fontSize: 11 }}>{(person.name || "?").trim().charAt(0).toUpperCase()}</span>;
+  const PersonCard = ({ item }) => <div style={{ minWidth: 0, padding: "11px 12px", borderRadius: 11, background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}` }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <Avatar person={item.person} />
+      <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.person.name}</div><div style={{ fontSize: 10.5, color: COLORS.textFaint, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>über {item.via.name} · {relationshipLabel(item.type)}</div></div>
+      <IconButton onClick={() => onEditPerson(item.person)} title="Person bearbeiten"><Pencil size={13} /></IconButton>
+    </div>
+    <button onClick={() => setFocusId(item.person.id)} title={item.path.join(" → ")} style={{ width: "100%", marginTop: 9, padding: "6px 8px", borderRadius: 7, border: `1px solid ${COLORS.borderSoft}`, background: COLORS.bgSoft, color: COLORS.textMuted, cursor: "pointer", fontSize: 10.5, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.path.join(" → ")} <ChevronRight size={11} style={{ verticalAlign: "-2px" }} /></button>
+  </div>;
+
+  return <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
+    <div style={{ ...modalStyle, maxWidth: 820 }} onClick={(event) => event.stopPropagation()}><div style={modalBodyStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 16 }}><div><h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2><p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Beziehungen übersichtlich nach Entfernungsebenen.</p></div><IconButton onClick={onClose}><X size={16} /></IconButton></div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}><ToggleChip active={mode === "explore"} onClick={() => setMode("explore")}>Netz erkunden</ToggleChip><ToggleChip active={mode === "list"} onClick={() => setMode("list")}>Alle Beziehungen</ToggleChip></div>
+
+      {mode === "explore" ? <>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap", marginBottom: 18 }}>
+          <div style={{ flex: "1 1 220px" }}><label style={labelStyle}>Ausgangspunkt</label><select value={focusId} onChange={(event) => setFocusId(event.target.value)} style={{ ...inputStyle, marginBottom: 0, cursor: "pointer" }}>{[...persons].sort((a, b) => a.name.localeCompare(b.name, "de")).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></div>
+          <div><label style={labelStyle}>Ebenen</label><div style={{ display: "flex", gap: 5 }}>{[1, 2, 3, 4].map((value) => <ToggleChip key={value} active={depth === value} onClick={() => setDepth(value)}>{value}</ToggleChip>)}</div></div>
+        </div>
+        {!network.focus ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>Keine Person verfügbar.</div> : <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 14px", borderRadius: 12, background: (network.focus.color || COLORS.violet) + "18", border: `1px solid ${(network.focus.color || COLORS.violet)}66` }}><Avatar person={network.focus} size={36} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 10, fontWeight: 700, color: COLORS.ember2, textTransform: "uppercase" }}>Ausgangspunkt</div><div style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>{network.focus.name}</div></div><button onClick={() => onEditPerson(network.focus)} style={{ ...ghostBtn, padding: "7px 9px", fontSize: 11.5 }}><Pencil size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />Bearbeiten</button></div>
+          {network.layers.map((layer, index) => layer?.length > 0 && <section key={index}><div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><span style={{ width: 22, height: 22, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", background: COLORS.bgSoft, color: COLORS.textMuted, fontFamily: "JetBrains Mono, monospace", fontSize: 10.5 }}>{index + 1}</span><span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase" }}>{index === 0 ? "Direkt verbunden" : `${index + 1}. Ebene`} · {layer.length} {layer.length === 1 ? "Person" : "Personen"}</span></div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>{layer.map((item) => <PersonCard key={item.person.id} item={item} />)}</div></section>)}
+          {network.layers.every((layer) => !layer?.length) && <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 18 }}>Für diese Person sind noch keine Verbindungen eingetragen.</div>}
+          {network.hasMore && <div style={{ fontSize: 11.5, color: COLORS.textFaint, textAlign: "center" }}>Weitere Personen sind verbunden. Erhöhe die Anzahl der Ebenen, um sie anzuzeigen.</div>}
+        </div>}
+      </> : <>
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Person oder Beziehung suchen …" style={{ ...inputStyle, marginBottom: 14 }} />
+        {filteredEdges.length === 0 ? <div style={{ color: COLORS.textFaint, textAlign: "center", padding: 20 }}>{edges.length ? "Keine passende Verbindung gefunden." : "Noch keine Verbindungen eingetragen."}</div> : <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>{filteredEdges.map((edge) => <div key={[edge.source.id, edge.target.id].sort().join("|")} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)", alignItems: "center", gap: 8, padding: "10px 11px", background: COLORS.bgSoft, borderRadius: 10 }}><button onClick={() => { setFocusId(edge.source.id); setMode("explore"); }} style={{ border: "none", background: "transparent", color: COLORS.text, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: 7, minWidth: 0, textAlign: "left" }}><Avatar person={edge.source} size={26} /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 600 }}>{edge.source.name}</span></button><span style={{ fontSize: 10.5, color: COLORS.textFaint, textAlign: "center" }}>{relationshipLabel(edge.type)}</span><button onClick={() => { setFocusId(edge.target.id); setMode("explore"); }} style={{ border: "none", background: "transparent", color: COLORS.text, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 7, minWidth: 0 }}><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 600 }}>{edge.target.name}</span><Avatar person={edge.target} size={26} /></button></div>)}</div>}
+      </>}
+    </div></div>
+  </div>;
 }
 
 /* ============================================================
