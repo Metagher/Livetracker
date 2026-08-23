@@ -4995,7 +4995,6 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
                     key={p.id}
                     person={p}
                     celebrating={celebrateId === p.id}
-                    persons={persons}
                     onLogMeeting={(date) => logMeeting(p, date)}
                     onDeleteMeeting={(meetingIndex) => deleteMeeting(p.id, meetingIndex)}
                     onEdit={() => { setModalPerson(p); setShowModal(true); }}
@@ -5165,7 +5164,7 @@ function MeetingPeopleModal({ meeting, onChange, onClose, onConfirm }) {
   );
 }
 
-function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting, onEdit }) {
+function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onEdit }) {
   const stats = personStats(person);
   const age = person.birthdayYearConfirmed === true ? birthdayAge(person.birthday) : null;
   const initial = (person.name || "?").trim().charAt(0).toUpperCase();
@@ -5214,12 +5213,6 @@ function PersonRow({ person, persons, celebrating, onLogMeeting, onDeleteMeeting
           <span>{stats.total} Treffen gesamt</span>
           <span>{stats.thisWeek} diese Woche</span>
           <span>{stats.thisMonth} diesen Monat</span>
-        </div>}
-        {(person.relationships || []).length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
-          {(person.relationships || []).map((relationship) => {
-            const target = (persons || []).find((candidate) => candidate.id === relationship.personId);
-            return target ? <span key={relationship.personId} style={{ fontSize: 10.5, color: COLORS.textMuted, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 7, padding: "3px 6px" }}>{relationshipLabel(relationship.type)} {target.name}</span> : null;
-          })}
         </div>}
       </div>
 
