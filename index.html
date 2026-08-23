@@ -5931,11 +5931,11 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
     const container = networkScrollRef.current;
     if (!container || mode !== "explore") return;
     const frame = requestAnimationFrame(() => {
-      container.scrollLeft = Math.max(0, familyTree.focusX * networkZoom - container.clientWidth / 2);
-      container.scrollTop = Math.max(0, familyTree.focusY * networkZoom - container.clientHeight / 2);
+      container.scrollLeft = Math.max(0, radialNetwork.center * networkZoom - container.clientWidth / 2);
+      container.scrollTop = Math.max(0, radialNetwork.center * networkZoom - container.clientHeight / 2);
     });
     return () => cancelAnimationFrame(frame);
-  }, [focusId, depth, networkZoom, mode, familyTree.width, familyTree.height]);
+  }, [focusId, depth, networkZoom, mode, radialNetwork.size]);
 
   const filteredEdges = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("de");
@@ -5957,8 +5957,8 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
 
   return <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
     <div style={{ ...modalStyle, maxWidth: 820 }} onClick={(event) => event.stopPropagation()}><div style={{ ...modalBodyStyle, padding: isMobile ? 14 : 24 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 16 }}><div><h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2><p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Familienbeziehungen nach Generationen und Ästen.</p></div><IconButton onClick={onClose}><X size={16} /></IconButton></div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}><ToggleChip active={mode === "explore"} onClick={() => setMode("explore")}>Stammbaum</ToggleChip><ToggleChip active={mode === "list"} onClick={() => setMode("list")}>Alle Beziehungen</ToggleChip></div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 16 }}><div><h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>{title}</h2><p style={{ fontSize: 12, color: COLORS.textFaint, margin: "4px 0 0" }}>Beziehungen übersichtlich nach Entfernungsebenen.</p></div><IconButton onClick={onClose}><X size={16} /></IconButton></div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}><ToggleChip active={mode === "explore"} onClick={() => setMode("explore")}>Netz erkunden</ToggleChip><ToggleChip active={mode === "list"} onClick={() => setMode("list")}>Alle Beziehungen</ToggleChip></div>
 
       {mode === "explore" ? <>
         <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap", marginBottom: 18 }}>
@@ -5987,59 +5987,27 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
               </div>
             </div>
             <div ref={networkScrollRef} style={{ width: "100%", overflow: "auto", WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y", overscrollBehavior: "contain", borderRadius: 12, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, maxHeight: isMobile ? "56vh" : "min(62vh, 680px)" }}>
-            <svg viewBox={`0 0 ${familyTree.width} ${familyTree.height}`} width={familyTree.width * networkZoom} height={familyTree.height * networkZoom} role="img" aria-label={`Stammbaum von ${network.focus.name}`} style={{ display: "block", maxWidth: "none", margin: "0 auto" }}>
-              {familyTree.rows.map((row) => {
-                const label = row.generation === 0 ? "Eigene Generation" : row.generation === -1 ? "Eltern" : row.generation === -2 ? "Großeltern" : row.generation === 1 ? "Kinder" : row.generation === 2 ? "Enkel" : row.generation < 0 ? `${Math.abs(row.generation)} Generationen darüber` : `${row.generation} Generationen darunter`;
-                return <g key={row.generation}>
-                  <rect x="18" y={row.y - 53} width="118" height="20" rx="7" fill={COLORS.surfaceRaised} />
-                  <text x="27" y={row.y - 39} fill={row.generation === 0 ? COLORS.textMuted : COLORS.textFaint} fontSize="10" fontWeight="600">{label}</text>
-                </g>;
-              })}
-              {familyTree.secondaryEdges.map((edge) => {
-                const from = familyTree.positions.get(edge.source.id);
-                const to = familyTree.positions.get(edge.target.id);
+            <svg viewBox={`0 0 ${radialNetwork.size} ${radialNetwork.size}`} width={radialNetwork.size * networkZoom} height={radialNetwork.size * networkZoom} role="img" aria-label={`Beziehungsnetz von ${network.focus.name}`} style={{ display: "block", maxWidth: "none", margin: "0 auto" }}>
+              {radialNetwork.radii.map((radius, index) => <circle key={index} cx={radialNetwork.center} cy={radialNetwork.center} r={radius} fill="none" stroke={COLORS.borderSoft} strokeWidth="1" strokeDasharray="4 7" />)}
+              {radialNetwork.displayEdges.map((edge) => {
+                const from = radialNetwork.positions.get(edge.source.id);
+                const to = radialNetwork.positions.get(edge.target.id);
                 const stroke = relationshipColor(edge.priority);
-                const controlY = Math.min(from.y, to.y) - 40;
-                return <path key={[edge.source.id, edge.target.id].sort().join("|")} d={`M ${from.x} ${from.y} C ${from.x} ${controlY}, ${to.x} ${controlY}, ${to.x} ${to.y}`} fill="none" stroke={stroke} strokeWidth={edge.priority === 1 ? 1.8 : 1.25} strokeDasharray="5 5" opacity="0.45"><title>{edge.source.name} · {relationshipLabel(edge.type)} · {edge.target.name}</title></path>;
+                const strokeWidth = edge.priority === 0 ? 3.2 : edge.priority === 1 ? 2.2 : edge.priority === 2 ? 1.45 : 1;
+                const dash = edge.priority === 2 ? "5 4" : edge.priority === 3 ? "2 5" : undefined;
+                return <line key={[edge.source.id, edge.target.id].sort().join("|")} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dash} opacity={edge.isTreeEdge ? 0.95 : edge.priority <= 1 ? 0.72 : 0.5}><title>{edge.source.name} · {relationshipLabel(edge.type)} · {edge.target.name} ({relationshipTier(edge.type)})</title></line>;
               })}
-              {familyTree.partnerEdges.map((edge) => {
-                const a = familyTree.positions.get(edge.aId);
-                const b = familyTree.positions.get(edge.bId);
-                if (!a || !b) return null;
-                const left = a.x < b.x ? a : b;
-                const right = a.x < b.x ? b : a;
-                return <g key={`${edge.aId}|${edge.bId}`}>
-                  <line x1={left.x + 58} y1={left.y} x2={right.x - 58} y2={right.y} stroke={COLORS.ember2} strokeWidth="3" />
-                  <circle cx={(left.x + right.x) / 2} cy={left.y} r="4" fill={COLORS.ember2} />
-                </g>;
-              })}
-              {familyTree.parentGroups.map((group) => {
-                const parents = group.parentIds.map((id) => familyTree.positions.get(id)).filter(Boolean);
-                const children = group.childIds.map((id) => familyTree.positions.get(id)).filter(Boolean);
-                if (!parents.length || !children.length) return null;
-                const parentCenterY = Math.max(...parents.map((parent) => parent.y));
-                const parentY = parents.length > 1 ? parentCenterY : parentCenterY + 27;
-                const childY = Math.min(...children.map((child) => child.y)) - 27;
-                const unionX = parents.reduce((sum, parent) => sum + parent.x, 0) / parents.length;
-                const branchY = parentY + (childY - parentY) * 0.48;
-                const childXs = children.map((child) => child.x);
-                return <g key={`${group.parentIds.join("|")}=>${group.childIds.join("|")}`}>
-                  {parents.length > 1 && <line x1={Math.min(...parents.map((parent) => parent.x)) + 58} y1={parentCenterY} x2={Math.max(...parents.map((parent) => parent.x)) - 58} y2={parentCenterY} stroke={COLORS.ember2} strokeWidth="3" />}
-                  <path d={`M ${unionX} ${parentY} L ${unionX} ${branchY}`} fill="none" stroke={COLORS.ember2} strokeWidth="3" />
-                  {children.length > 1 && <line x1={Math.min(...childXs)} y1={branchY} x2={Math.max(...childXs)} y2={branchY} stroke={COLORS.ember2} strokeWidth="3" />}
-                  {children.map((child) => <line key={child.person.id} x1={child.x} y1={branchY} x2={child.x} y2={childY} stroke={COLORS.ember2} strokeWidth="3" />)}
-                </g>;
-              })}
-              {[...familyTree.positions.values()].map((position) => {
-                const central = position.person.id === network.focus.id;
+              {[...radialNetwork.positions.values()].map((position) => {
+                const central = position.level === 0;
                 const nodeColor = central ? COLORS.textMuted : relationshipColor(position.priority);
                 const displayName = position.person.name.length > 18 ? position.person.name.slice(0, 17) + "…" : position.person.name;
                 return <g key={position.person.id} onClick={() => setFocusId(position.person.id)} style={{ cursor: "pointer" }}>
                   <title>{position.person.name}{central ? " · Mittelpunkt" : " · antippen zum Zentrieren"}</title>
-                  <rect x={position.x - 58} y={position.y - 27} width="116" height="54" rx="11" fill={COLORS.surface} stroke={nodeColor} strokeWidth={central ? 3.5 : 2.2} />
-                  <circle cx={position.x - 38} cy={position.y} r="14" fill={nodeColor + "2b"} />
-                  <text x={position.x - 38} y={position.y + 4} textAnchor="middle" fill={nodeColor} fontSize="11.5" fontWeight="700">{(position.person.name || "?").trim().charAt(0).toUpperCase()}</text>
-                  <text x={position.x - 17} y={position.y + 4} fill={COLORS.text} fontSize="10.5" fontWeight={central ? "700" : "600"}>{displayName}</text>
+                  <circle cx={position.x} cy={position.y} r={central ? 31 : 25} fill={COLORS.surface} stroke={nodeColor} strokeWidth={central ? 4 : 2.5} />
+                  <circle cx={position.x} cy={position.y} r={central ? 23 : 18} fill={nodeColor + "2b"} />
+                  <text x={position.x} y={position.y + 4} textAnchor="middle" fill={nodeColor} fontSize={central ? 14 : 12} fontWeight="700">{(position.person.name || "?").trim().charAt(0).toUpperCase()}</text>
+                  <rect x={position.x - 48} y={position.y + (central ? 37 : 31)} width="96" height="21" rx="7" fill={COLORS.surfaceRaised} stroke={COLORS.borderSoft} />
+                  <text x={position.x} y={position.y + (central ? 51 : 45)} textAnchor="middle" fill={COLORS.text} fontSize="10.5" fontWeight={central ? "700" : "600"}>{displayName}</text>
                 </g>;
               })}
             </svg>
