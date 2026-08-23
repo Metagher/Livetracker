@@ -5619,7 +5619,7 @@ function PersonNetworkView({ persons, title = "Verbindungen", onClose, onEditPer
   const isMobile = useIsMobile();
   const [mode, setMode] = useState("explore");
   const [focusId, setFocusId] = useState(() => persons.find((person) => (person.relationships || []).length)?.id || persons[0]?.id || "");
-  const [depth, setDepth] = useState(3);
+  const [depth, setDepth] = useState(2);
   const [search, setSearch] = useState("");
   const [networkZoom, setNetworkZoom] = useState(() => window.innerWidth <= 760 ? 0.9 : 1);
   const networkScrollRef = useRef(null);
