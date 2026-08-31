@@ -87,7 +87,7 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder
+  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder, Wallet
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, Cell, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -423,6 +423,7 @@ const isValidDateKey = (key) => {
 const dayLabel = (k) => keyToDate(k).toLocaleDateString("de-DE", { weekday: "short" });
 const shortDate = (k) => keyToDate(k).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
 const longDate = (k) => keyToDate(k).toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const formatMoney = (n) => (Number(n) || 0).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const WEEKDAY_LABELS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 function startOfWeek(d) {
   const date = new Date(d);
@@ -1651,6 +1652,7 @@ function PersonModal({ initial, onClose, onSave, onDelete, groups, onAddGroup, p
                 id: initial?.id || `person_${Date.now()}`,
                 name: name.trim(), info: info.trim(), groups: personGroupIds, category: personGroupIds[0] || "", birthday: birthday || null, birthdayYearConfirmed: birthday ? birthdayYearConfirmed : false, color, meetingTrackingEnabled,
                 meetings: initial?.meetings || [],
+                loans: initial?.loans || [],
                 relationships,
                 dismissedRelationshipSuggestions: (livePerson || initial)?.dismissedRelationshipSuggestions || [],
                 createdAt: initial?.createdAt || todayKey(),
@@ -4908,6 +4910,29 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     persistPersons(next);
   };
 
+  const addLoan = (personId, loan) => {
+    const next = persons.map((p) => (p.id === personId ? { ...p, loans: [...(p.loans || []), loan] } : p));
+    persistPersons(next);
+  };
+
+  const toggleLoanSettled = (personId, loanId) => {
+    const next = persons.map((p) => {
+      if (p.id !== personId) return p;
+      return {
+        ...p,
+        loans: (p.loans || []).map((loan) => loan.id === loanId
+          ? { ...loan, settled: !loan.settled, settledAt: !loan.settled ? todayKey() : null }
+          : loan),
+      };
+    });
+    persistPersons(next);
+  };
+
+  const deleteLoan = (personId, loanId) => {
+    const next = persons.map((p) => (p.id !== personId ? p : { ...p, loans: (p.loans || []).filter((loan) => loan.id !== loanId) }));
+    persistPersons(next);
+  };
+
   // Baut eine bidirektionale Verbindung auf, ohne mögliche Folgebeziehungen zu
   // prüfen. Diese Variante wird auch für ausdrücklich bestätigte Vorschläge genutzt.
   const addRelationshipDirectly = (personId, targetId, type, sourcePersons = persons) => {
@@ -5176,6 +5201,9 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
                     celebrating={celebrateId === p.id}
                     onLogMeeting={(date) => logMeeting(p, date)}
                     onDeleteMeeting={(meetingIndex) => deleteMeeting(p.id, meetingIndex)}
+                    onAddLoan={(loan) => addLoan(p.id, loan)}
+                    onToggleLoanSettled={(loanId) => toggleLoanSettled(p.id, loanId)}
+                    onDeleteLoan={(loanId) => deleteLoan(p.id, loanId)}
                     onEdit={() => { setModalPerson(p); setShowModal(true); }}
                   />
                 ))}
@@ -5387,11 +5415,14 @@ function MeetingPeopleModal({ meeting, onChange, onClose, onConfirm }) {
   );
 }
 
-function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onEdit }) {
+function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onAddLoan, onToggleLoanSettled, onDeleteLoan, onEdit }) {
   const stats = personStats(person);
   const age = person.birthdayYearConfirmed === true ? birthdayAge(person.birthday) : null;
   const initial = (person.name || "?").trim().charAt(0).toUpperCase();
   const [showHistory, setShowHistory] = useState(false);
+  const [showLoans, setShowLoans] = useState(false);
+  const openLoanBalance = (person.loans || []).filter((loan) => !loan.settled)
+    .reduce((sum, loan) => sum + (loan.direction === "lent" ? loan.amount : -loan.amount), 0);
 
   return (
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, overflow: "hidden" }}>
@@ -5425,6 +5456,17 @@ function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onEdit 
           {person.meetingTrackingEnabled === false && (
             <span style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 6, color: COLORS.textFaint, background: COLORS.bgSoft }}>ohne Treffen-Zählung</span>
           )}
+          {openLoanBalance !== 0 && (
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600,
+              padding: "2px 7px", borderRadius: 6,
+              color: openLoanBalance > 0 ? COLORS.mint : COLORS.coral,
+              background: (openLoanBalance > 0 ? COLORS.mint : COLORS.coral) + "1a",
+            }}>
+              <Wallet size={11} />
+              {openLoanBalance > 0 ? `schuldet dir ${formatMoney(openLoanBalance)} €` : `du schuldest ${formatMoney(-openLoanBalance)} €`}
+            </span>
+          )}
         </div>
         {person.meetingTrackingEnabled !== false && <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 2 }}>
           {stats.lastMet ? `Zuletzt getroffen: ${shortDate(stats.lastMet)}` : "Noch nicht getroffen"}
@@ -5446,11 +5488,111 @@ function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onEdit 
         {person.meetingTrackingEnabled !== false && <button onClick={() => setShowHistory((value) => !value)} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5 }}>
           {showHistory ? "Weniger" : "Verlauf"}
         </button>}
+        <button onClick={() => setShowLoans((value) => !value)} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
+          <Wallet size={13} /> {showLoans ? "Weniger" : "Geld"}
+        </button>
       </div>
       </div>
 
       {showHistory && (
         <MeetingHistory person={person} onAddMeeting={onLogMeeting} onDeleteMeeting={onDeleteMeeting} />
+      )}
+      {showLoans && (
+        <LoanHistory person={person} onAddLoan={onAddLoan} onToggleLoanSettled={onToggleLoanSettled} onDeleteLoan={onDeleteLoan} />
+      )}
+    </div>
+  );
+}
+
+function LoanHistory({ person, onAddLoan, onToggleLoanSettled, onDeleteLoan }) {
+  const [amount, setAmount] = useState("");
+  const [direction, setDirection] = useState("lent");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState(todayKey());
+  const [confirmId, setConfirmId] = useState(null);
+
+  const loans = [...(person.loans || [])].sort((a, b) => {
+    if (!!a.settled !== !!b.settled) return a.settled ? 1 : -1;
+    return (b.date || "").localeCompare(a.date || "");
+  });
+  const parsedAmount = parseFloat(String(amount).replace(",", "."));
+  const canAdd = amount !== "" && !Number.isNaN(parsedAmount) && parsedAmount > 0;
+  const openSum = loans.filter((loan) => !loan.settled).reduce((sum, loan) => sum + (loan.direction === "lent" ? loan.amount : -loan.amount), 0);
+
+  const handleAdd = () => {
+    if (!canAdd) return;
+    onAddLoan({
+      id: `loan_${Date.now()}`,
+      amount: parsedAmount,
+      direction,
+      note: note.trim(),
+      date,
+      settled: false,
+      settledAt: null,
+      createdAt: todayKey(),
+    });
+    setAmount("");
+    setNote("");
+  };
+
+  return (
+    <div style={{ borderTop: `1px solid ${COLORS.borderSoft}`, padding: "16px", cursor: "default" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>
+        Geld vorgestreckt
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <select value={direction} onChange={(e) => setDirection(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: "1 1 200px", cursor: "pointer" }}>
+          <option value="lent">Ich habe vorgestreckt</option>
+          <option value="borrowed">{person.name} hat vorgestreckt</option>
+        </select>
+        <input type="number" min="0" step="0.01" placeholder="Betrag (€)" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: "1 1 110px" }} />
+        <input type="date" max={todayKey()} value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: "1 1 150px" }} />
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <input type="text" placeholder="Notiz (optional)" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: "1 1 200px" }} />
+        <button disabled={!canAdd} onClick={handleAdd} style={{ ...primaryBtn, opacity: canAdd ? 1 : 0.5, cursor: canAdd ? "pointer" : "not-allowed", flexShrink: 0 }}>Eintragen</button>
+      </div>
+
+      {loans.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Einträge.</div>
+      ) : (
+        <>
+          {openSum !== 0 && (
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10, color: openSum > 0 ? COLORS.mint : COLORS.coral }}>
+              {openSum > 0 ? `${person.name} schuldet dir noch ${formatMoney(openSum)} €` : `Du schuldest ${person.name} noch ${formatMoney(-openSum)} €`}
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {loans.map((loan) => (
+              <div key={loan.id} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                padding: "8px 10px", borderRadius: 9, background: COLORS.bgSoft, opacity: loan.settled ? 0.55 : 1,
+              }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!loan.settled} onChange={() => onToggleLoanSettled(loan.id)} style={{ width: 16, height: 16, margin: 0, flexShrink: 0 }} />
+                  <span style={{ fontSize: 12.5, color: COLORS.textMuted, minWidth: 0 }}>
+                    <strong style={{ color: COLORS.text, textDecoration: loan.settled ? "line-through" : "none" }}>{formatMoney(loan.amount)} €</strong>
+                    {" · "}{loan.direction === "lent" ? `du → ${person.name}` : `${person.name} → du`}
+                    {" · "}{shortDate(loan.date)}
+                    {loan.note ? ` · ${loan.note}` : ""}
+                    {loan.settled ? " · verrechnet" : ""}
+                  </span>
+                </label>
+                {confirmId === loan.id ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                    <button onClick={() => setConfirmId(null)} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11 }}>Abbrechen</button>
+                    <button onClick={() => { onDeleteLoan(loan.id); setConfirmId(null); }} style={{
+                      ...ghostBtn, padding: "5px 8px", fontSize: 11, color: COLORS.coral, borderColor: COLORS.coral,
+                    }}>Löschen</button>
+                  </div>
+                ) : (
+                  <IconButton onClick={() => setConfirmId(loan.id)} title="Eintrag löschen" danger><Trash2 size={13} /></IconButton>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
@@ -6460,6 +6602,20 @@ function SettingsPage({
     (persons || []).forEach((p) => (p.meetings || []).forEach((date) => meetingsSheet.push({ Datum: date, Person: p.name })));
     meetingsSheet.sort((a, b) => a.Datum.localeCompare(b.Datum));
 
+    const loansSheet = [];
+    (persons || []).forEach((p) => (p.loans || []).forEach((loan) => {
+      loansSheet.push({
+        Person: p.name,
+        Richtung: loan.direction === "lent" ? "Ich habe vorgestreckt" : "Person hat vorgestreckt",
+        Betrag: loan.amount,
+        Datum: loan.date || "",
+        Verrechnet: loan.settled ? "Ja" : "Nein",
+        "Verrechnet am": loan.settledAt || "",
+        Notiz: loan.note || "",
+      });
+    }));
+    loansSheet.sort((a, b) => (a.Datum || "").localeCompare(b.Datum || ""));
+
     const relationshipsSheet = [];
     const seenPairs = new Set();
     (persons || []).forEach((p) => (p.relationships || []).forEach((r) => {
@@ -6508,6 +6664,7 @@ function SettingsPage({
     addSheet("Ziele", goalsSheet);
     addSheet("Personen", personsSheet);
     addSheet("Treffen", meetingsSheet);
+    addSheet("Vorstreckungen", loansSheet);
     addSheet("Verbindungen", relationshipsSheet);
     addSheet("Journal", journalSheet);
     addSheet("Stimmung", moodSheet);
