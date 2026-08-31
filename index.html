@@ -4837,6 +4837,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   const [pendingGroupMeeting, setPendingGroupMeeting] = useState(null);
   const [relationshipSuggestions, setRelationshipSuggestions] = useState([]);
   const [showExpenseSplit, setShowExpenseSplit] = useState(false);
+  const [groupFilter, setGroupFilter] = useState(null);
 
   const trackedPersons = persons.filter((p) => p.meetingTrackingEnabled !== false);
   const totalMeetings = trackedPersons.reduce((s, p) => s + (p.meetings || []).length, 0);
@@ -4937,8 +4938,12 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   // Legt eine zentrale Ausgabe auf mehrere Personen um: jede ausgewählte
   // Person bekommt einen eigenen "lent"-Eintrag über ihren Anteil, alle mit
   // derselben expenseId verknüpft (für eine spätere gemeinsame Auswertung).
-  const splitExpense = ({ totalAmount, participantIds, includeSelf, note, date }) => {
-    const shareCount = participantIds.length + (includeSelf ? 1 : 0);
+  // `tempNames` sind spontan eingetippte Namen, die nur für die Divisor-
+  // Berechnung zählen (z. B. Gäste, die keine dauerhafte Person werden sollen)
+  // - sie werden nirgends als eigene Person gespeichert, nur als Referenztext
+  // an den gespeicherten Anteilen der echten Personen vermerkt.
+  const splitExpense = ({ totalAmount, participantIds, includeSelf, note, date, tempNames = [] }) => {
+    const shareCount = participantIds.length + tempNames.length + (includeSelf ? 1 : 0);
     if (shareCount === 0 || !(totalAmount > 0)) return;
     const share = totalAmount / shareCount;
     const expenseId = `expense_${Date.now()}`;
@@ -4957,6 +4962,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
         expenseId,
         expenseTotal: totalAmount,
         expenseParticipants: shareCount,
+        expenseTempParticipants: tempNames,
       };
       return { ...p, loans: [...(p.loans || []), loan] };
     });
@@ -5161,15 +5167,26 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   };
 
   const sorted = [...persons].sort((a, b) => a.name.localeCompare(b.name, "de"));
-  const grouped = useMemo(() => {
-    const map = {};
-    sorted.forEach((person) => {
-      const assignedGroups = person.groups || (person.category ? [person.category] : []);
-      const effectiveGroups = assignedGroups.length ? assignedGroups : [UNCATEGORIZED];
-      effectiveGroups.forEach((group) => { if (!map[group]) map[group] = []; map[group].push(person); });
-    });
-    return Object.keys(map).sort((a, b) => a === UNCATEGORIZED ? 1 : b === UNCATEGORIZED ? -1 : a.localeCompare(b, "de")).map((category) => ({ category, habits: map[category] }));
-  }, [persons]);
+  const personGroupsOf = (person) => {
+    const assigned = person.groups || (person.category ? [person.category] : []);
+    return assigned.length ? assigned : [UNCATEGORIZED];
+  };
+  // Zählt Personen pro Gruppe für die Filter-Chips. Eine Person mit mehreren
+  // Gruppen zählt in jeder ihrer Gruppen mit, wird aber in der Liste darunter
+  // nur einmal angezeigt (das war zuvor das Problem: dieselbe Sektionierung
+  // wurde auch fürs Rendering genutzt und hat Personen dupliziert).
+  const groupCounts = useMemo(() => {
+    const map = new Map();
+    sorted.forEach((person) => personGroupsOf(person).forEach((group) => map.set(group, (map.get(group) || 0) + 1)));
+    return [...map.entries()].sort(([a], [b]) => a === UNCATEGORIZED ? 1 : b === UNCATEGORIZED ? -1 : a.localeCompare(b, "de"));
+  }, [sorted]);
+  useEffect(() => {
+    if (groupFilter && !groupCounts.some(([group]) => group === groupFilter)) setGroupFilter(null);
+  }, [groupCounts, groupFilter]);
+  const filteredPersons = useMemo(() => {
+    if (!groupFilter) return sorted;
+    return sorted.filter((person) => personGroupsOf(person).includes(groupFilter));
+  }, [sorted, groupFilter]);
   const networkPersons = useMemo(() => {
     if (!networkGroup) return persons;
     const members = persons.filter((person) => (person.groups || (person.category ? [person.category] : [])).includes(networkGroup));
@@ -5216,37 +5233,64 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
           <button onClick={() => { setModalPerson(undefined); setShowModal(true); }} style={primaryBtn}>Erste Person anlegen</button>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          {grouped.map(({ category, habits: groupPersons }) => (
-            <div key={category}>
-              <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8, flexWrap: "wrap" }}>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryColor(category) }} />
-                <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.05em" }}>{category}</span>
-                {category !== UNCATEGORIZED && groupPersons.some((person) => person.meetingTrackingEnabled !== false) && (
-                  <button onClick={() => setPendingGroupMeeting({ groupName: category, people: groupPersons, date: todayKey() })} style={{ ...primaryBtn, marginLeft: "auto", padding: "5px 8px", fontSize: 10.5, display: "flex", alignItems: "center", gap: 5 }}>
-                    <Plus size={11} /> Gruppentreffen
+        <>
+          {groupCounts.length > 1 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 14 }}>
+              <button onClick={() => setGroupFilter(null)} style={{
+                padding: "6px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12,
+                border: `1px solid ${!groupFilter ? COLORS.violet : COLORS.border}`,
+                color: !groupFilter ? COLORS.text : COLORS.textMuted,
+                background: !groupFilter ? COLORS.violet + "1f" : "transparent",
+              }}>Alle ({sorted.length})</button>
+              {groupCounts.map(([group, count]) => {
+                const active = groupFilter === group;
+                return (
+                  <button key={group} onClick={() => setGroupFilter(group)} style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    padding: "6px 12px", borderRadius: 8, cursor: "pointer", fontSize: 12,
+                    border: `1px solid ${active ? categoryColor(group) : COLORS.border}`,
+                    color: active ? COLORS.text : COLORS.textMuted,
+                    background: active ? categoryColor(group) + "1f" : "transparent",
+                  }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: categoryColor(group) }} />
+                    {group} ({count})
                   </button>
-                )}
-                {category !== UNCATEGORIZED && groupPersons.length > 1 && <button onClick={() => { setNetworkGroup(category); setShowNetwork(true); }} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 10.5, display: "flex", alignItems: "center", gap: 5 }}><Users size={11} /> Verbindungen</button>}
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {groupPersons.map((p) => (
-                  <PersonRow
-                    key={p.id}
-                    person={p}
-                    celebrating={celebrateId === p.id}
-                    onLogMeeting={(date) => logMeeting(p, date)}
-                    onDeleteMeeting={(meetingIndex) => deleteMeeting(p.id, meetingIndex)}
-                    onAddLoan={(loan) => addLoan(p.id, loan)}
-                    onToggleLoanSettled={(loanId) => toggleLoanSettled(p.id, loanId)}
-                    onDeleteLoan={(loanId) => deleteLoan(p.id, loanId)}
-                    onEdit={() => { setModalPerson(p); setShowModal(true); }}
-                  />
-                ))}
-              </div>
+                );
+              })}
             </div>
-          ))}
-        </div>
+          )}
+
+          {groupFilter && groupFilter !== UNCATEGORIZED && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+              {filteredPersons.some((person) => person.meetingTrackingEnabled !== false) && (
+                <button onClick={() => setPendingGroupMeeting({ groupName: groupFilter, people: filteredPersons, date: todayKey() })} style={{ ...primaryBtn, padding: "7px 10px", fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
+                  <Plus size={13} /> Gruppentreffen
+                </button>
+              )}
+              {filteredPersons.length > 1 && (
+                <button onClick={() => { setNetworkGroup(groupFilter); setShowNetwork(true); }} style={{ ...ghostBtn, padding: "7px 10px", fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
+                  <Users size={13} /> Verbindungen in dieser Gruppe
+                </button>
+              )}
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {filteredPersons.map((p) => (
+              <PersonRow
+                key={p.id}
+                person={p}
+                celebrating={celebrateId === p.id}
+                onLogMeeting={(date) => logMeeting(p, date)}
+                onDeleteMeeting={(meetingIndex) => deleteMeeting(p.id, meetingIndex)}
+                onAddLoan={(loan) => addLoan(p.id, loan)}
+                onToggleLoanSettled={(loanId) => toggleLoanSettled(p.id, loanId)}
+                onDeleteLoan={(loanId) => deleteLoan(p.id, loanId)}
+                onEdit={() => { setModalPerson(p); setShowModal(true); }}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       {showModal && (
@@ -5467,6 +5511,7 @@ function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onAddLo
   const [showLoans, setShowLoans] = useState(false);
   const openLoanBalance = (person.loans || []).filter((loan) => !loan.settled)
     .reduce((sum, loan) => sum + (loan.direction === "lent" ? loan.amount : -loan.amount), 0);
+  const personGroupTags = person.groups && person.groups.length ? person.groups : (person.category ? [person.category] : []);
 
   return (
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, overflow: "hidden" }}>
@@ -5512,6 +5557,16 @@ function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onAddLo
             </span>
           )}
         </div>
+        {personGroupTags.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 5 }}>
+            {personGroupTags.map((group) => (
+              <span key={group} style={{
+                fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 6,
+                color: categoryColor(group), background: categoryColor(group) + "1a",
+              }}>{group}</span>
+            ))}
+          </div>
+        )}
         {person.meetingTrackingEnabled !== false && <div style={{ fontSize: 12, color: COLORS.textFaint, marginTop: 2 }}>
           {stats.lastMet ? `Zuletzt getroffen: ${shortDate(stats.lastMet)}` : "Noch nicht getroffen"}
         </div>}
@@ -5621,6 +5676,7 @@ function LoanHistory({ person, onAddLoan, onToggleLoanSettled, onDeleteLoan }) {
                     {" · "}{shortDate(loan.date)}
                     {loan.note ? ` · ${loan.note}` : ""}
                     {loan.expenseParticipants ? ` · geteilt durch ${loan.expenseParticipants} (${formatMoney(loan.expenseTotal)} € gesamt)` : ""}
+                    {loan.expenseTempParticipants?.length ? ` · auch dabei: ${loan.expenseTempParticipants.join(", ")}` : ""}
                     {loan.settled ? " · verrechnet" : ""}
                   </span>
                 </label>
@@ -5655,14 +5711,24 @@ function ExpenseSplitModal({ persons, onClose, onSubmit }) {
   const [date, setDate] = useState(todayKey());
   const [selectedIds, setSelectedIds] = useState([]);
   const [includeSelf, setIncludeSelf] = useState(true);
+  const [tempNames, setTempNames] = useState([]);
+  const [tempInput, setTempInput] = useState("");
   const viewport = useVisualViewport();
 
   const parsedAmount = parseFloat(String(amount).replace(",", "."));
-  const shareCount = selectedIds.length + (includeSelf ? 1 : 0);
+  const shareCount = selectedIds.length + tempNames.length + (includeSelf ? 1 : 0);
   const share = shareCount > 0 && parsedAmount > 0 ? parsedAmount / shareCount : 0;
   const canSubmit = parsedAmount > 0 && selectedIds.length > 0;
 
   const toggleSelected = (id) => setSelectedIds((current) => current.includes(id) ? current.filter((x) => x !== id) : [...current, id]);
+
+  const addTempName = () => {
+    const trimmed = tempInput.trim();
+    if (!trimmed) return;
+    setTempNames((current) => [...current, trimmed]);
+    setTempInput("");
+  };
+  const removeTempName = (index) => setTempNames((current) => current.filter((_, i) => i !== index));
 
   return (
     <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
@@ -5706,11 +5772,46 @@ function ExpenseSplitModal({ persons, onClose, onSubmit }) {
             </div>
           )}
 
+          <label style={labelStyle}>Weitere (nur für diese Zahlung)</label>
+          <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: -3, marginBottom: 8 }}>
+            Namen zählen für die Aufteilung mit, werden aber nicht als Person gespeichert.
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <input
+              type="text"
+              placeholder="Name eintippen …"
+              value={tempInput}
+              onChange={(e) => setTempInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTempName(); } }}
+              style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+            />
+            <button type="button" disabled={!tempInput.trim()} onClick={addTempName} style={{ ...ghostBtn, opacity: tempInput.trim() ? 1 : 0.5, cursor: tempInput.trim() ? "pointer" : "not-allowed", flexShrink: 0 }}>
+              Hinzufügen
+            </button>
+          </div>
+          {tempNames.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 14 }}>
+              {tempNames.map((name, index) => (
+                <span key={`${name}_${index}`} style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, padding: "6px 8px 6px 10px",
+                  borderRadius: 8, background: COLORS.bgSoft, border: `1px dashed ${COLORS.border}`, color: COLORS.textMuted,
+                }}>
+                  {name}
+                  <IconButton onClick={() => removeTempName(index)} title="Entfernen" danger><X size={12} /></IconButton>
+                </span>
+              ))}
+            </div>
+          )}
+
           {shareCount > 0 && parsedAmount > 0 && (
             <div style={{ padding: "11px 12px", borderRadius: 10, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, fontSize: 12.5, color: COLORS.textMuted, marginBottom: 4 }}>
               {shareCount} {shareCount === 1 ? "Anteil" : "Anteile"} à <strong style={{ color: COLORS.text }}>{formatMoney(share)} €</strong>
               {selectedIds.length > 0 && <> · jede ausgewählte Person schuldet dir {formatMoney(share)} €</>}
+              {tempNames.length > 0 && <> · temporär: {tempNames.map((name) => `${name} ${formatMoney(share)} €`).join(", ")}</>}
             </div>
+          )}
+          {selectedIds.length === 0 && tempNames.length > 0 && (
+            <div style={{ fontSize: 11.5, color: COLORS.textFaint }}>Wähle zusätzlich mindestens eine gespeicherte Person aus, damit ein Anteil festgehalten wird.</div>
           )}
         </div>
 
@@ -5720,7 +5821,7 @@ function ExpenseSplitModal({ persons, onClose, onSubmit }) {
             <button onClick={onClose} style={ghostBtn}>Abbrechen</button>
             <button
               disabled={!canSubmit}
-              onClick={() => onSubmit({ totalAmount: parsedAmount, participantIds: selectedIds, includeSelf, note, date })}
+              onClick={() => onSubmit({ totalAmount: parsedAmount, participantIds: selectedIds, includeSelf, note, date, tempNames })}
               style={{ ...primaryBtn, opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? "pointer" : "not-allowed" }}
             >
               Aufteilen
@@ -6748,6 +6849,7 @@ function SettingsPage({
         Notiz: loan.note || "",
         "Ausgabe gesamt": loan.expenseTotal || "",
         "Anzahl Anteile": loan.expenseParticipants || "",
+        "Temporäre Teilnehmer": (loan.expenseTempParticipants || []).join(", "),
       });
     }));
     loansSheet.sort((a, b) => (a.Datum || "").localeCompare(b.Datum || ""));
