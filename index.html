@@ -4836,6 +4836,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   const [pendingMeeting, setPendingMeeting] = useState(null);
   const [pendingGroupMeeting, setPendingGroupMeeting] = useState(null);
   const [relationshipSuggestions, setRelationshipSuggestions] = useState([]);
+  const [showExpenseSplit, setShowExpenseSplit] = useState(false);
 
   const trackedPersons = persons.filter((p) => p.meetingTrackingEnabled !== false);
   const totalMeetings = trackedPersons.reduce((s, p) => s + (p.meetings || []).length, 0);
@@ -4931,6 +4932,36 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
   const deleteLoan = (personId, loanId) => {
     const next = persons.map((p) => (p.id !== personId ? p : { ...p, loans: (p.loans || []).filter((loan) => loan.id !== loanId) }));
     persistPersons(next);
+  };
+
+  // Legt eine zentrale Ausgabe auf mehrere Personen um: jede ausgewählte
+  // Person bekommt einen eigenen "lent"-Eintrag über ihren Anteil, alle mit
+  // derselben expenseId verknüpft (für eine spätere gemeinsame Auswertung).
+  const splitExpense = ({ totalAmount, participantIds, includeSelf, note, date }) => {
+    const shareCount = participantIds.length + (includeSelf ? 1 : 0);
+    if (shareCount === 0 || !(totalAmount > 0)) return;
+    const share = totalAmount / shareCount;
+    const expenseId = `expense_${Date.now()}`;
+    const participantSet = new Set(participantIds);
+    const next = persons.map((p) => {
+      if (!participantSet.has(p.id)) return p;
+      const loan = {
+        id: `loan_${Date.now()}_${p.id}`,
+        amount: share,
+        direction: "lent",
+        note: note.trim(),
+        date,
+        settled: false,
+        settledAt: null,
+        createdAt: todayKey(),
+        expenseId,
+        expenseTotal: totalAmount,
+        expenseParticipants: shareCount,
+      };
+      return { ...p, loans: [...(p.loans || []), loan] };
+    });
+    persistPersons(next);
+    setShowExpenseSplit(false);
   };
 
   // Baut eine bidirektionale Verbindung auf, ohne mögliche Folgebeziehungen zu
@@ -5157,6 +5188,11 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
               <Users size={15} /> Verbindungen
             </button>
           )}
+          {persons.length > 0 && (
+            <button onClick={() => setShowExpenseSplit(true)} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 6 }}>
+              <Wallet size={15} /> Ausgabe teilen
+            </button>
+          )}
           <button onClick={() => { setModalPerson(undefined); setShowModal(true); }} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 6 }}>
             <Plus size={15} /> Neue Person
           </button>
@@ -5233,6 +5269,14 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
           title={networkGroup ? `Verbindungen · ${networkGroup}` : "Verbindungen"}
           onClose={() => { setShowNetwork(false); setNetworkGroup(null); }}
           onEditPerson={(p) => { setShowNetwork(false); setNetworkGroup(null); setModalPerson(p); setShowModal(true); }}
+        />
+      )}
+
+      {showExpenseSplit && (
+        <ExpenseSplitModal
+          persons={sorted}
+          onClose={() => setShowExpenseSplit(false)}
+          onSubmit={splitExpense}
         />
       )}
 
@@ -5576,6 +5620,7 @@ function LoanHistory({ person, onAddLoan, onToggleLoanSettled, onDeleteLoan }) {
                     {" · "}{loan.direction === "lent" ? `du → ${person.name}` : `${person.name} → du`}
                     {" · "}{shortDate(loan.date)}
                     {loan.note ? ` · ${loan.note}` : ""}
+                    {loan.expenseParticipants ? ` · geteilt durch ${loan.expenseParticipants} (${formatMoney(loan.expenseTotal)} € gesamt)` : ""}
                     {loan.settled ? " · verrechnet" : ""}
                   </span>
                 </label>
@@ -5594,6 +5639,95 @@ function LoanHistory({ person, onAddLoan, onToggleLoanSettled, onDeleteLoan }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+   @section EXPENSE-SPLIT-MODAL — zentrale Ausgabe auf mehrere Personen umlegen
+   Eine einzelne Ausgabe (z. B. Restaurantrechnung) wird gleichmäßig auf
+   ausgewählte Personen umgelegt; für jede Person entsteht ein eigener
+   "lent"-Eintrag im Geld-Log über ihren Anteil.
+   ============================================================ */
+function ExpenseSplitModal({ persons, onClose, onSubmit }) {
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState(todayKey());
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [includeSelf, setIncludeSelf] = useState(true);
+  const viewport = useVisualViewport();
+
+  const parsedAmount = parseFloat(String(amount).replace(",", "."));
+  const shareCount = selectedIds.length + (includeSelf ? 1 : 0);
+  const share = shareCount > 0 && parsedAmount > 0 ? parsedAmount / shareCount : 0;
+  const canSubmit = parsedAmount > 0 && selectedIds.length > 0;
+
+  const toggleSelected = (id) => setSelectedIds((current) => current.includes(id) ? current.filter((x) => x !== id) : [...current, id]);
+
+  return (
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
+      <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+        <div style={modalBodyStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+            <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>Ausgabe teilen</h2>
+            <IconButton onClick={onClose}><X size={16} /></IconButton>
+          </div>
+
+          <label style={labelStyle}>Gesamtbetrag (€)</label>
+          <input type="number" min="0" step="0.01" placeholder="z. B. 60" value={amount} onChange={(e) => setAmount(e.target.value)} style={inputStyle} autoFocus />
+
+          <label style={labelStyle}>Datum</label>
+          <input type="date" max={todayKey()} value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+
+          <label style={labelStyle}>Beschreibung (optional)</label>
+          <input type="text" placeholder="z. B. Abendessen" value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} />
+
+          <label style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "11px 12px", marginBottom: 14,
+            borderRadius: 10, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, cursor: "pointer",
+          }}>
+            <input type="checkbox" checked={includeSelf} onChange={(e) => setIncludeSelf(e.target.checked)} style={{ width: 17, height: 17, margin: 0 }} />
+            <span>
+              <strong style={{ display: "block", fontSize: 12.5 }}>Ich zahle meinen Anteil selbst mit</strong>
+              <span style={{ display: "block", fontSize: 11, color: COLORS.textFaint, marginTop: 2 }}>Aktiviert: Betrag wird durch (ausgewählte Personen + ich) geteilt.</span>
+            </span>
+          </label>
+
+          <label style={labelStyle}>Aufteilen unter</label>
+          {persons.length === 0 ? (
+            <div style={{ fontSize: 12, color: COLORS.textFaint, marginBottom: 10 }}>Keine Personen vorhanden.</div>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 14 }}>
+              {persons.map((p) => (
+                <ToggleChip key={p.id} active={selectedIds.includes(p.id)} onClick={() => toggleSelected(p.id)} accent={p.color}>
+                  {selectedIds.includes(p.id) ? "✓ " : ""}{p.name}
+                </ToggleChip>
+              ))}
+            </div>
+          )}
+
+          {shareCount > 0 && parsedAmount > 0 && (
+            <div style={{ padding: "11px 12px", borderRadius: 10, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, fontSize: 12.5, color: COLORS.textMuted, marginBottom: 4 }}>
+              {shareCount} {shareCount === 1 ? "Anteil" : "Anteile"} à <strong style={{ color: COLORS.text }}>{formatMoney(share)} €</strong>
+              {selectedIds.length > 0 && <> · jede ausgewählte Person schuldet dir {formatMoney(share)} €</>}
+            </div>
+          )}
+        </div>
+
+        <div style={modalFooterStyle}>
+          <span />
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={onClose} style={ghostBtn}>Abbrechen</button>
+            <button
+              disabled={!canSubmit}
+              onClick={() => onSubmit({ totalAmount: parsedAmount, participantIds: selectedIds, includeSelf, note, date })}
+              style={{ ...primaryBtn, opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? "pointer" : "not-allowed" }}
+            >
+              Aufteilen
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -6612,6 +6746,8 @@ function SettingsPage({
         Verrechnet: loan.settled ? "Ja" : "Nein",
         "Verrechnet am": loan.settledAt || "",
         Notiz: loan.note || "",
+        "Ausgabe gesamt": loan.expenseTotal || "",
+        "Anzahl Anteile": loan.expenseParticipants || "",
       });
     }));
     loansSheet.sort((a, b) => (a.Datum || "").localeCompare(b.Datum || ""));
