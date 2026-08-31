@@ -304,7 +304,7 @@ const COLORS = {
 // ausgelieferten HTML enthalten, damit sie erst nach erfolgreichem Push/Deploy
 // in der laufenden App sichtbar wird.
 const APP_RELEASE = {
-  version: "2026.08.31-1",
+  version: "2026.08.31-2",
   date: "31.08.2026",
 };
 
@@ -4877,7 +4877,7 @@ function ageAtNextBirthday(birthday, today = new Date()) {
   return birthdayYear - born.getFullYear();
 }
 
-function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }) {
+function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup, isMobile }) {
   const [showModal, setShowModal] = useState(false);
   const [modalPerson, setModalPerson] = useState(undefined);
   const [celebrateId, setCelebrateId] = useState(null);
@@ -5248,7 +5248,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Personen</h1>
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {persons.length > 1 && (
             <button onClick={() => { setNetworkGroup(null); setShowNetwork(true); }} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 6 }}>
               <Users size={15} /> Verbindungen
@@ -5333,6 +5333,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup }
                 key={p.id}
                 person={p}
                 celebrating={celebrateId === p.id}
+                isMobile={isMobile}
                 onLogMeeting={(date) => logMeeting(p, date)}
                 onDeleteMeeting={(meetingIndex) => deleteMeeting(p.id, meetingIndex)}
                 onAddLoan={(loan) => addLoan(p.id, loan)}
@@ -5582,7 +5583,7 @@ function MeetingPeopleModal({ meeting, onChange, onClose, onConfirm }) {
   );
 }
 
-function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onAddLoan, onToggleLoanSettled, onDeleteLoan, onEdit }) {
+function PersonRow({ person, celebrating, isMobile, onLogMeeting, onDeleteMeeting, onAddLoan, onToggleLoanSettled, onDeleteLoan, onEdit }) {
   const stats = personStats(person);
   const age = person.birthdayYearConfirmed === true ? birthdayAge(person.birthday) : null;
   const initial = (person.name || "?").trim().charAt(0).toUpperCase();
@@ -5598,8 +5599,9 @@ function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onAddLo
         onClick={onEdit}
         title="Person bearbeiten"
         style={{
-          display: "flex", alignItems: "center", gap: 14, padding: "14px 16px",
-          position: "relative", overflow: "hidden", cursor: "pointer",
+          display: "flex", alignItems: isMobile ? "flex-start" : "center", flexWrap: isMobile ? "wrap" : "nowrap",
+          gap: isMobile ? 10 : 14, padding: isMobile ? "12px 14px" : "14px 16px",
+          position: "relative", cursor: "pointer",
         }}
       >
       {celebrating && <Confetti trigger={person.id + "_" + Date.now()} />}
@@ -5659,7 +5661,11 @@ function PersonRow({ person, celebrating, onLogMeeting, onDeleteMeeting, onAddLo
         </div>}
       </div>
 
-      <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        display: "flex", gap: 6, flexWrap: "wrap",
+        flexBasis: isMobile ? "100%" : "auto", flexShrink: 0,
+        marginLeft: isMobile ? 50 : 0,
+      }}>
         {person.meetingTrackingEnabled !== false && <button onClick={() => onLogMeeting(todayKey())} title="Treffen für heute eintragen" style={{ ...primaryBtn, padding: "7px 10px", fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
           <Plus size={13} /> Treffen
         </button>}
@@ -7892,7 +7898,7 @@ export default function LifeOS() {
           {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} moods={moods} persistMoods={persistMoods} statsByHabitId={statsByHabitId} isMobile={isMobile} currentDateKey={currentDateKey} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} statsByHabitId={statsByHabitId} currentDateKey={currentDateKey} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
-          {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} />}
+          {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} isMobile={isMobile} />}
           {page === "notes" && <NotesPage notes={notes} persistNotes={persistNotes} noteFolders={noteFolders} persistNoteFolders={persistNoteFolders} />}
           {page === "settings" && (
             <SettingsPage
