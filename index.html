@@ -1773,7 +1773,7 @@ function HabitRow({ habit, entries, stats, isMobile, onToggle, onOpenDetail, onE
       </div>
 
       <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={() => onOpenDetail(habit)}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", rowGap: 4 }}>
           <span style={{ fontWeight: 600, fontSize: 14.5 }}>{habit.name}</span>
           {habit.difficulty && (
             <span style={{
@@ -2184,7 +2184,7 @@ function HabitDetail({ habit, entries, onClose, onToggle }) {
               </div>
             ) : (
               <div style={{ background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 12, padding: 14 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
                   <MiniStat label="Aktuell" value={valueStats.last} unit={habit.unit} />
                   <MiniStat label="Ø Schnitt" value={Math.round(valueStats.avg * 10) / 10} unit={habit.unit} />
                   <MiniStat label="Min" value={valueStats.min} unit={habit.unit} />
