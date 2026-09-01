@@ -87,7 +87,7 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder, Wallet, PiggyBank
+  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder, Wallet, PiggyBank, Link2
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, Cell, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -7067,8 +7067,10 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const [marie, setMarie] = useState(false);
   const [date, setDate] = useState(todayKey());
   const [note, setNote] = useState("");
+  const [linkId, setLinkId] = useState("");
   const [confirmId, setConfirmId] = useState(null);
   const [editingId, setEditingId] = useState(null);
+  const [expandedLinkIds, setExpandedLinkIds] = useState(() => new Set());
   const formRef = useRef(null);
 
   const { startKey, endKey, label } = useMemo(() => financePeriodRange(periodDate, periodMode), [periodDate, periodMode]);
@@ -7120,6 +7122,37 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const marieExpenseShare = marieExpenseSum * 0.5;
   const marieIncomeShare = marieIncomeSum * 0.5;
 
+  // Verknüpfte Einträge (z. B. eine Ausgabe und die passende Einnahme) tragen
+  // dieselbe frei vergebene linkId - hier über alle Zeiträume hinweg gemeinsam
+  // ausgewertet, unabhängig vom oben durchblätterten Zeitraum.
+  const allLinkIds = useMemo(() => {
+    const set = new Set();
+    (financeEntries || []).forEach((e) => { if (e.linkId) set.add(e.linkId); });
+    return [...set].sort((a, b) => a.localeCompare(b, "de"));
+  }, [financeEntries]);
+
+  const linkedGroups = useMemo(() => {
+    const map = new Map();
+    (financeEntries || []).forEach((e) => {
+      const id = (e.linkId || "").trim();
+      if (!id) return;
+      if (!map.has(id)) map.set(id, []);
+      map.get(id).push(e);
+    });
+    return [...map.entries()].map(([id, groupEntries]) => {
+      const income = groupEntries.filter((e) => e.type === "income").reduce((s, e) => s + e.amount, 0);
+      const expense = groupEntries.filter((e) => e.type === "expense").reduce((s, e) => s + e.amount, 0);
+      const invest = groupEntries.filter((e) => e.type === "investment").reduce((s, e) => s + e.amount, 0);
+      return { linkId: id, entries: groupEntries, income, expense, invest, net: income - expense, count: groupEntries.length };
+    }).sort((a, b) => a.linkId.localeCompare(b.linkId, "de"));
+  }, [financeEntries]);
+
+  const toggleLinkGroup = (id) => setExpandedLinkIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
   // Verlauf: immer die letzten Perioden bis heute, unabhängig vom oben
   // durchblätterten Zeitraum - so bleibt der Trend ein stabiler Rückblick.
   const trend = useMemo(() => {
@@ -7165,7 +7198,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const resetForm = () => {
     setEditingId(null);
     setType("expense"); setAmount(""); setCategory(""); setFixed(false);
-    setCoverageMonths([]); setMarie(false); setDate(todayKey()); setNote("");
+    setCoverageMonths([]); setMarie(false); setDate(todayKey()); setNote(""); setLinkId("");
   };
 
   const startEdit = (entry) => {
@@ -7178,6 +7211,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
     setMarie(!!entry.marie);
     setDate(entry.date);
     setNote(entry.note || "");
+    setLinkId(entry.linkId || "");
     formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
@@ -7186,7 +7220,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
     const fields = {
       type, amount: parsedAmount, category: category || "", fixed: isFixed,
       coverageMonths: isFixed ? coverageMonths : [], marie,
-      note: note.trim(), date,
+      note: note.trim(), date, linkId: linkId.trim(),
     };
     if (editingId) {
       persistFinanceEntries((financeEntries || []).map((e) => (e.id === editingId ? { ...e, ...fields } : e)));
@@ -7196,6 +7230,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
     }
     setAmount("");
     setNote("");
+    setLinkId("");
   };
 
   const deleteEntry = (id) => {
@@ -7293,6 +7328,18 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
           </button>
         </div>
 
+        <label style={labelStyle}>Verknüpfungs-ID (optional)</label>
+        <input
+          type="text" placeholder="z. B. Autoverkauf" value={linkId}
+          onChange={(e) => setLinkId(e.target.value)} style={inputStyle} list="finance-link-ids"
+        />
+        <datalist id="finance-link-ids">
+          {allLinkIds.map((id) => <option key={id} value={id} />)}
+        </datalist>
+        <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: -3, marginBottom: 14 }}>
+          Gib zusammenhängenden Einträgen (z. B. eine Ausgabe und die passende Einnahme) dieselbe ID, um sie weiter unten gemeinsam auszuwerten.
+        </div>
+
         <div style={{ display: "flex", gap: 10 }}>
           <button disabled={!canSubmit} onClick={handleSubmit} style={{ ...primaryBtn, opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? "pointer" : "not-allowed" }}>
             {editingId ? "Aktualisieren" : "Eintragen"}
@@ -7367,6 +7414,59 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
         </div>
       )}
 
+      {linkedGroups.length > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+          <SectionLabel>Verknüpfte Einträge</SectionLabel>
+          <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>
+            Einträge mit derselben Verknüpfungs-ID gehören zusammen (z. B. eine Ausgabe und die passende Einnahme) - hier über alle Zeiträume hinweg gemeinsam ausgewertet, unabhängig vom oben durchblätterten Zeitraum.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {linkedGroups.map((group) => (
+              <div key={group.linkId} style={{ border: `1px solid ${COLORS.borderSoft}`, borderRadius: 12, overflow: "hidden" }}>
+                <button
+                  type="button"
+                  onClick={() => toggleLinkGroup(group.linkId)}
+                  style={{
+                    width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                    padding: "10px 12px", background: COLORS.bgSoft, border: "none", cursor: "pointer", textAlign: "left",
+                  }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, minWidth: 0 }}>
+                    <Link2 size={13} style={{ color: COLORS.violet, flexShrink: 0 }} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.linkId}</span>
+                    <span style={{ color: COLORS.textFaint, fontWeight: 400, flexShrink: 0 }}>({group.count})</span>
+                  </span>
+                  <span style={{ display: "flex", gap: 10, fontFamily: "JetBrains Mono, monospace", fontSize: 12, flexShrink: 0, alignItems: "center" }}>
+                    {group.income > 0 && <span style={{ color: COLORS.mint }}>+{formatMoney(group.income)} €</span>}
+                    {group.expense > 0 && <span style={{ color: COLORS.coral }}>-{formatMoney(group.expense)} €</span>}
+                    {group.invest > 0 && <span style={{ color: COLORS.violet }}>{formatMoney(group.invest)} € Invest</span>}
+                    <strong style={{ color: group.net >= 0 ? COLORS.mint : COLORS.coral }}>
+                      {group.net >= 0 ? "+" : ""}{formatMoney(group.net)} €
+                    </strong>
+                  </span>
+                </button>
+                {expandedLinkIds.has(group.linkId) && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 10 }}>
+                    {[...group.entries].sort((a, b) => b.date.localeCompare(a.date)).map((e) => {
+                      const entryMeta = FINANCE_TYPE_META[e.type] || FINANCE_TYPE_META.expense;
+                      return (
+                        <div key={e.id} style={{ fontSize: 12, color: COLORS.textMuted }}>
+                          <strong style={{ color: entryMeta.color }}>{entryMeta.sign}{formatMoney(e.amount)} €</strong>
+                          {" · "}{entryMeta.label}
+                          {e.category ? ` · ${e.category}` : ""}
+                          {" · "}{shortDate(e.date)}
+                          {e.note ? ` · ${e.note}` : ""}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
         <SectionLabel>Verlauf</SectionLabel>
         <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
@@ -7412,6 +7512,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                     {entry.marie ? " · Marie 50%" : ""}
                     {" · "}{shortDate(entry.date)}
                     {entry.note ? ` · ${entry.note}` : ""}
+                    {entry.linkId ? <span style={{ color: COLORS.violet }}> · <Link2 size={10} style={{ verticalAlign: "-1px" }} /> {entry.linkId}</span> : null}
                   </span>
                   {confirmId === entry.id ? (
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
@@ -7613,7 +7714,7 @@ function SettingsPage({
       Datum: f.date, Typ: financeTypeLabels[f.type] || f.type, Betrag: f.amount, Bereich: f.category || "",
       Art: f.type === "expense" ? (f.fixed ? "Fix" : "Variabel") : "",
       "Gilt für Monate": f.type === "expense" && f.fixed ? financeCoverageMonths(f).map(financeMonthLabel).join(", ") : "",
-      Marie: f.marie ? "Ja" : "Nein", Notiz: f.note || "",
+      Marie: f.marie ? "Ja" : "Nein", Notiz: f.note || "", "Verknüpfungs-ID": f.linkId || "",
     }));
 
     addSheet("Habits", habitsSheet);
