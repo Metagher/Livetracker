@@ -4887,6 +4887,7 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup, 
   const [pendingGroupMeeting, setPendingGroupMeeting] = useState(null);
   const [relationshipSuggestions, setRelationshipSuggestions] = useState([]);
   const [showExpenseSplit, setShowExpenseSplit] = useState(false);
+  const [showSingleEntry, setShowSingleEntry] = useState(false);
   const [groupFilter, setGroupFilter] = useState(null);
 
   const trackedPersons = persons.filter((p) => p.meetingTrackingEnabled !== false);
@@ -5017,6 +5018,40 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup, 
     });
     persistPersons(next);
     setShowExpenseSplit(false);
+  };
+
+  // Legt einen einzelnen Geld-Eintrag an. Bei einer bestehenden Person wird
+  // er direkt an sie gehängt; bei einem eingetippten Namen entsteht eine neue
+  // Person mit `temporary: true` (nimmt nicht an der Treffen-Zählung teil,
+  // wird in der Liste als "temporär" markiert), die den Eintrag trägt - so
+  // muss für eine einmalige Zahlung keine dauerhafte Person angelegt werden.
+  const addSingleEntry = ({ personId, tempName, amount, direction, note, date }) => {
+    if (!(amount > 0)) return;
+    const loan = {
+      id: `loan_${Date.now()}`,
+      amount,
+      direction,
+      note: note.trim(),
+      date,
+      settled: false,
+      settledAt: null,
+      createdAt: todayKey(),
+    };
+    if (personId) {
+      addLoan(personId, loan);
+    } else if (tempName && tempName.trim()) {
+      const newPerson = {
+        id: `person_${Date.now()}`,
+        name: tempName.trim(),
+        info: "", groups: [], category: "", birthday: null, birthdayYearConfirmed: false,
+        color: HABIT_COLORS[persons.length % HABIT_COLORS.length],
+        meetingTrackingEnabled: false,
+        temporary: true,
+        loans: [loan],
+      };
+      persistPersons([...persons, newPerson]);
+    }
+    setShowSingleEntry(false);
   };
 
   // Baut eine bidirektionale Verbindung auf, ohne mögliche Folgebeziehungen zu
@@ -5259,6 +5294,9 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup, 
               <Wallet size={15} /> Ausgabe teilen
             </button>
           )}
+          <button onClick={() => setShowSingleEntry(true)} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 6 }}>
+            <Wallet size={15} /> Einzeleintrag
+          </button>
           <button onClick={() => { setModalPerson(undefined); setShowModal(true); }} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 6 }}>
             <Plus size={15} /> Neue Person
           </button>
@@ -5374,6 +5412,14 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup, 
           persons={sorted}
           onClose={() => setShowExpenseSplit(false)}
           onSubmit={splitExpense}
+        />
+      )}
+
+      {showSingleEntry && (
+        <SingleEntryModal
+          persons={sorted}
+          onClose={() => setShowSingleEntry(false)}
+          onSubmit={addSingleEntry}
         />
       )}
 
@@ -5623,7 +5669,13 @@ function PersonRow({ person, celebrating, isMobile, onLogMeeting, onDeleteMeetin
               🎂 {keyToDate(person.birthday).toLocaleDateString("de-DE")}{age !== null ? ` · ${age} Jahre` : " · Jahr unsicher"}
             </span>
           )}
-          {person.meetingTrackingEnabled === false && (
+          {person.temporary && (
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600,
+              padding: "2px 7px", borderRadius: 6, color: COLORS.violet, background: COLORS.violet + "1a",
+            }}>temporär</span>
+          )}
+          {person.meetingTrackingEnabled === false && !person.temporary && (
             <span style={{ fontSize: 10.5, padding: "2px 7px", borderRadius: 6, color: COLORS.textFaint, background: COLORS.bgSoft }}>ohne Treffen-Zählung</span>
           )}
           {openLoanBalance !== 0 && (
@@ -5780,6 +5832,107 @@ function LoanHistory({ person, onAddLoan, onToggleLoanSettled, onDeleteLoan }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+   @section SINGLE-ENTRY-MODAL — einzelner Geld-Eintrag, wahlweise für eine
+   bestehende Person oder eine neu eingetippte temporäre Person, die dafür
+   angelegt wird (ohne Treffen-Zählung, in der Liste als "temporär" markiert).
+   ============================================================ */
+function SingleEntryModal({ persons, onClose, onSubmit }) {
+  const [mode, setMode] = useState(persons.length > 0 ? "existing" : "temp");
+  const [personId, setPersonId] = useState(null);
+  const [tempName, setTempName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [direction, setDirection] = useState("lent");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState(todayKey());
+  const viewport = useVisualViewport();
+
+  const parsedAmount = parseFloat(String(amount).replace(",", "."));
+  const targetName = mode === "existing" ? (persons.find((p) => p.id === personId)?.name || "die Person") : (tempName.trim() || "die Person");
+  const canSubmit = parsedAmount > 0 && (mode === "existing" ? !!personId : tempName.trim().length > 0);
+
+  const selectMode = (nextMode) => {
+    setMode(nextMode);
+    if (nextMode === "existing") setTempName(""); else setPersonId(null);
+  };
+
+  return (
+    <div style={{ ...overlayStyle, height: viewport.height, top: viewport.top }} onClick={onClose}>
+      <div style={{ ...modalStyle, maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+        <div style={modalBodyStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+            <h2 style={{ fontFamily: "Fraunces, serif", fontSize: 21, fontWeight: 600, margin: 0 }}>Einzeleintrag</h2>
+            <IconButton onClick={onClose}><X size={16} /></IconButton>
+          </div>
+
+          <label style={labelStyle}>Für wen</label>
+          <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
+            <ToggleChip active={mode === "existing"} onClick={() => selectMode("existing")}>Bestehende Person</ToggleChip>
+            <ToggleChip active={mode === "temp"} onClick={() => selectMode("temp")}>Neue temporäre Person</ToggleChip>
+          </div>
+
+          {mode === "existing" ? (
+            persons.length === 0 ? (
+              <div style={{ fontSize: 12, color: COLORS.textFaint, marginBottom: 14 }}>Keine Personen vorhanden.</div>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 14 }}>
+                {persons.map((p) => (
+                  <ToggleChip key={p.id} active={personId === p.id} onClick={() => setPersonId(p.id)} accent={p.color}>
+                    {personId === p.id ? "✓ " : ""}{p.name}
+                  </ToggleChip>
+                ))}
+              </div>
+            )
+          ) : (
+            <>
+              <input
+                type="text"
+                placeholder="Name eintippen …"
+                value={tempName}
+                onChange={(e) => setTempName(e.target.value)}
+                style={inputStyle}
+                autoFocus
+              />
+              <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: -3, marginBottom: 14 }}>
+                Legt eine neue Person mit diesem Namen an, die als temporär markiert ist und nicht an der Treffen-Zählung teilnimmt.
+              </div>
+            </>
+          )}
+
+          <label style={labelStyle}>Richtung</label>
+          <select value={direction} onChange={(e) => setDirection(e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
+            <option value="lent">Ich habe vorgestreckt</option>
+            <option value="borrowed">{targetName} hat vorgestreckt</option>
+          </select>
+
+          <label style={labelStyle}>Betrag (€)</label>
+          <input type="number" min="0" step="0.01" placeholder="z. B. 20" value={amount} onChange={(e) => setAmount(e.target.value)} style={inputStyle} />
+
+          <label style={labelStyle}>Datum</label>
+          <input type="date" max={todayKey()} value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+
+          <label style={labelStyle}>Notiz (optional)</label>
+          <input type="text" placeholder="z. B. Taxi" value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} />
+        </div>
+
+        <div style={modalFooterStyle}>
+          <span />
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={onClose} style={ghostBtn}>Abbrechen</button>
+            <button
+              disabled={!canSubmit}
+              onClick={() => onSubmit({ personId: mode === "existing" ? personId : null, tempName: mode === "temp" ? tempName : null, amount: parsedAmount, direction, note, date })}
+              style={{ ...primaryBtn, opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? "pointer" : "not-allowed" }}
+            >
+              Eintragen
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
