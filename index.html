@@ -7055,7 +7055,7 @@ function financeEffectiveEntriesForRange(entries, startKey, endKey) {
   return financeMonthsBetween(startKey, endKey).flatMap((monthKey) => financeEffectiveEntriesForMonth(entries, monthKey));
 }
 
-function FinancePage({ financeEntries, persistFinanceEntries, financeCategories, onAddFinanceCategory, isMobile }) {
+function FinancePage({ financeEntries, persistFinanceEntries, financeCategories, onAddFinanceCategory, persons, onConvertLoan, isMobile }) {
   const [periodMode, setPeriodMode] = useState("month");
   const [periodDate, setPeriodDate] = useState(() => new Date());
   const [type, setType] = useState("expense");
@@ -7071,7 +7071,18 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const [confirmId, setConfirmId] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [expandedLinkIds, setExpandedLinkIds] = useState(() => new Set());
+  const [confirmConvertId, setConfirmConvertId] = useState(null);
   const formRef = useRef(null);
+
+  // Offene Vorstreckungen von der Personen-Seite (Personen-Loans), damit sie
+  // sich hier direkt als Zahlung verbuchen lassen - siehe onConvertLoan.
+  const openLoans = useMemo(() => {
+    const rows = [];
+    (persons || []).forEach((person) => {
+      (person.loans || []).filter((loan) => !loan.settled).forEach((loan) => rows.push({ person, loan }));
+    });
+    return rows.sort((a, b) => (a.loan.date || "").localeCompare(b.loan.date || ""));
+  }, [persons]);
 
   const { startKey, endKey, label } = useMemo(() => financePeriodRange(periodDate, periodMode), [periodDate, periodMode]);
 
@@ -7256,6 +7267,44 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
         <div style={{ fontSize: 15, fontWeight: 600, minWidth: 140, textAlign: "center" }}>{label}</div>
         <IconButton onClick={() => setPeriodDate((d) => shiftFinancePeriod(d, periodMode, 1))} title="Nächster Zeitraum"><ChevronRight size={16} /></IconButton>
       </div>
+
+      {openLoans.length > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+          <SectionLabel>Offene Beträge</SectionLabel>
+          <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>
+            Vorstreckungen von der Personen-Seite. "Als Zahlung verbuchen" markiert sie dort als beglichen und legt hier gleichzeitig den passenden Finanz-Eintrag an.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {openLoans.map(({ person, loan }) => (
+              <div key={loan.id} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                padding: "8px 10px", borderRadius: 9, background: COLORS.bgSoft, flexWrap: "wrap",
+              }}>
+                <span style={{ fontSize: 12.5, color: COLORS.textMuted, minWidth: 0 }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 600, color: COLORS.text }}>
+                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: person.color || COLORS.violet, flexShrink: 0 }} />
+                    {person.name}
+                  </span>
+                  {" · "}
+                  <strong style={{ color: loan.direction === "lent" ? COLORS.mint : COLORS.coral }}>
+                    {loan.direction === "lent" ? `schuldet dir ${formatMoney(loan.amount)} €` : `du schuldest ${formatMoney(loan.amount)} €`}
+                  </strong>
+                  {" · "}{shortDate(loan.date)}
+                  {loan.note ? ` · ${loan.note}` : ""}
+                </span>
+                {confirmConvertId === loan.id ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                    <button onClick={() => setConfirmConvertId(null)} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11 }}>Abbrechen</button>
+                    <button onClick={() => { onConvertLoan(person.id, loan.id); setConfirmConvertId(null); }} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11, color: COLORS.mint, borderColor: COLORS.mint }}>Bestätigen</button>
+                  </div>
+                ) : (
+                  <button onClick={() => setConfirmConvertId(loan.id)} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11, flexShrink: 0 }}>Als Zahlung verbuchen</button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div ref={formRef} style={{
         background: COLORS.surface, borderRadius: 16, padding: 18, marginBottom: 16,
@@ -7513,6 +7562,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                     {" · "}{shortDate(entry.date)}
                     {entry.note ? ` · ${entry.note}` : ""}
                     {entry.linkId ? <span style={{ color: COLORS.violet }}> · <Link2 size={10} style={{ verticalAlign: "-1px" }} /> {entry.linkId}</span> : null}
+                    {entry.sourceLoanId ? " · aus Vorstreckung" : ""}
                   </span>
                   {confirmId === entry.id ? (
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
@@ -7715,6 +7765,7 @@ function SettingsPage({
       Art: f.type === "expense" ? (f.fixed ? "Fix" : "Variabel") : "",
       "Gilt für Monate": f.type === "expense" && f.fixed ? financeCoverageMonths(f).map(financeMonthLabel).join(", ") : "",
       Marie: f.marie ? "Ja" : "Nein", Notiz: f.note || "", "Verknüpfungs-ID": f.linkId || "",
+      "Aus Vorstreckung": f.sourceLoanId ? "Ja" : "Nein",
     }));
 
     addSheet("Habits", habitsSheet);
@@ -8437,6 +8488,28 @@ export default function LifeOS() {
     if (!name || financeCategories.includes(name)) return;
     persistFinanceCategories([...financeCategories, name]);
   };
+  // Verbindet Personen-Vorstreckungen mit der Finanzseite: eine offene
+  // Vorstreckung "als Zahlung verbuchen" markiert sie bei der Person als
+  // beglichen (wie der Haken auf der Personen-Seite) UND legt gleichzeitig
+  // einen passenden Finanz-Eintrag an (Einnahme, wenn dir Geld zurückfließt,
+  // Ausgabe, wenn du zurückzahlst) - eine Aktion, eine Bezahlung in beiden Bereichen.
+  const convertLoanToPayment = (personId, loanId) => {
+    const person = persons.find((p) => p.id === personId);
+    const loan = (person?.loans || []).find((l) => l.id === loanId);
+    if (!person || !loan || loan.settled) return;
+    persistPersons(persons.map((p) => (p.id !== personId ? p : {
+      ...p,
+      loans: (p.loans || []).map((l) => (l.id === loanId ? { ...l, settled: true, settledAt: todayKey() } : l)),
+    })));
+    persistFinanceEntries([...(financeEntries || []), {
+      id: `fin_${Date.now()}`,
+      type: loan.direction === "lent" ? "income" : "expense",
+      amount: loan.amount, category: "", fixed: false, coverageMonths: [], marie: false, linkId: "",
+      note: `Vorstreckung – ${person.name}${loan.note ? `: ${loan.note}` : ""}`,
+      date: todayKey(), createdAt: todayKey(),
+      sourcePersonId: personId, sourceLoanId: loanId,
+    }]);
+  };
   const [hasCoachKey, setHasCoachKey] = useState(() => !!getAnthropicKey());
   const refreshCoachKey = useCallback(() => setHasCoachKey(!!getAnthropicKey()), []);
   const [page, setPage] = useState("dashboard");
@@ -8644,7 +8717,7 @@ export default function LifeOS() {
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} statsByHabitId={statsByHabitId} currentDateKey={currentDateKey} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} isMobile={isMobile} />}
-          {page === "finance" && <FinancePage financeEntries={financeEntries} persistFinanceEntries={persistFinanceEntries} financeCategories={financeCategories} onAddFinanceCategory={addFinanceCategory} isMobile={isMobile} />}
+          {page === "finance" && <FinancePage financeEntries={financeEntries} persistFinanceEntries={persistFinanceEntries} financeCategories={financeCategories} onAddFinanceCategory={addFinanceCategory} persons={persons} onConvertLoan={convertLoanToPayment} isMobile={isMobile} />}
           {page === "notes" && <NotesPage notes={notes} persistNotes={persistNotes} noteFolders={noteFolders} persistNoteFolders={persistNoteFolders} />}
           {page === "settings" && (
             <SettingsPage
