@@ -6975,8 +6975,11 @@ function NotesPage({ notes, persistNotes, noteFolders, persistNoteFolders }) {
 /* ============================================================
    @section FINANCE-PAGE — Einnahmen/Ausgaben/Investments je Eintrag, Bericht
    nach Monat/Jahr: Netto, Fixkosten vs. variable Kosten, Ausgaben nach
-   Bereich. Investments fließen wertneutral ein (zählen weder als Einnahme
-   noch als Ausgabe), erscheinen aber als eigene Kennzahl im Bericht.
+   Bereich, Marie-Anteil. Investments fließen wertneutral ein (zählen weder
+   als Einnahme noch als Ausgabe), erscheinen aber als eigene Kennzahl im
+   Bericht. Mehrmonatige Fixkosten (z. B. jährliche Versicherung) werden auf
+   die Monate umgelegt, die sie abdecken, damit die Monatsübersicht nicht
+   durch einzelne große Zahlungen verzerrt wird.
    ============================================================ */
 const FINANCE_TYPE_META = {
   income: { label: "Einnahme", color: COLORS.mint, sign: "+" },
@@ -6984,6 +6987,12 @@ const FINANCE_TYPE_META = {
   investment: { label: "Investment", color: COLORS.violet, sign: "" },
 };
 const FINANCE_NO_AREA = "Ohne Bereich";
+const FINANCE_INTERVAL_OPTIONS = [
+  { value: 1, label: "gilt für 1 Monat" },
+  { value: 3, label: "gilt für 3 Monate" },
+  { value: 6, label: "gilt für 6 Monate" },
+  { value: 12, label: "gilt für 12 Monate" },
+];
 
 function financePeriodRange(refDate, mode) {
   if (mode === "year") {
@@ -7003,6 +7012,44 @@ function shiftFinancePeriod(refDate, mode, direction) {
   return next;
 }
 
+const financeMonthKeyOf = (dateKey) => dateKey.slice(0, 7);
+function financeAddMonths(monthKey, n) {
+  const [y, m] = monthKey.split("-").map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+}
+function financeMonthsBetween(startKey, endKey) {
+  const months = [];
+  const endMonth = financeMonthKeyOf(endKey);
+  let cursor = financeMonthKeyOf(startKey);
+  while (cursor <= endMonth) {
+    months.push(cursor);
+    cursor = financeAddMonths(cursor, 1);
+  }
+  return months;
+}
+// Für eine mehrmonatige Fixkosten-Zahlung (z. B. jährliche Versicherung) den
+// anteiligen Monatsbetrag für jeden Monat liefern, den die Zahlung abdeckt
+// (ab dem Zahlungsmonat vorausschauend) - alle anderen Einträge zählen nur
+// in ihrem tatsächlichen Buchungsmonat.
+function financeEffectiveEntriesForMonth(entries, monthKey) {
+  const result = [];
+  (entries || []).forEach((entry) => {
+    if (entry.type === "expense" && entry.fixed) {
+      const interval = entry.intervalMonths || 1;
+      const paymentMonth = financeMonthKeyOf(entry.date);
+      const coveredMonths = Array.from({ length: interval }, (_, i) => financeAddMonths(paymentMonth, i));
+      if (coveredMonths.includes(monthKey)) result.push({ ...entry, amount: entry.amount / interval });
+    } else if (financeMonthKeyOf(entry.date) === monthKey) {
+      result.push(entry);
+    }
+  });
+  return result;
+}
+function financeEffectiveEntriesForRange(entries, startKey, endKey) {
+  return financeMonthsBetween(startKey, endKey).flatMap((monthKey) => financeEffectiveEntriesForMonth(entries, monthKey));
+}
+
 function FinancePage({ financeEntries, persistFinanceEntries, financeCategories, onAddFinanceCategory, isMobile }) {
   const [periodMode, setPeriodMode] = useState("month");
   const [periodDate, setPeriodDate] = useState(() => new Date());
@@ -7011,28 +7058,40 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const [category, setCategory] = useState("");
   const [newCategoryInput, setNewCategoryInput] = useState("");
   const [fixed, setFixed] = useState(false);
+  const [intervalMonths, setIntervalMonths] = useState(1);
+  const [marie, setMarie] = useState(false);
   const [date, setDate] = useState(todayKey());
   const [note, setNote] = useState("");
   const [confirmId, setConfirmId] = useState(null);
 
   const { startKey, endKey, label } = useMemo(() => financePeriodRange(periodDate, periodMode), [periodDate, periodMode]);
 
-  const entriesInPeriod = useMemo(
+  // Rohdaten (tatsächliches Buchungsdatum) für die Eintragsliste - hier soll
+  // die reale Zahlung stehen, nicht der auf Monate umgelegte Anteil.
+  const rawEntriesInPeriod = useMemo(
     () => (financeEntries || []).filter((entry) => entry.date >= startKey && entry.date <= endKey),
     [financeEntries, startKey, endKey]
   );
   const sortedEntries = useMemo(
-    () => [...entriesInPeriod].sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || "").localeCompare(a.createdAt || "")),
-    [entriesInPeriod]
+    () => [...rawEntriesInPeriod].sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || "").localeCompare(a.createdAt || "")),
+    [rawEntriesInPeriod]
   );
 
-  const sumByType = (t) => entriesInPeriod.filter((e) => e.type === t).reduce((sum, e) => sum + e.amount, 0);
+  // Für alle Auswertungen (Summen, Fix/Variabel, Bereiche, Marie) zählt der
+  // auf Monate umgelegte Anteil mehrmonatiger Fixkosten, nicht die volle
+  // Zahlung im Zahlungsmonat - siehe financeEffectiveEntriesForMonth.
+  const effectiveEntries = useMemo(
+    () => financeEffectiveEntriesForRange(financeEntries, startKey, endKey),
+    [financeEntries, startKey, endKey]
+  );
+
+  const sumByType = (t) => effectiveEntries.filter((e) => e.type === t).reduce((sum, e) => sum + e.amount, 0);
   const incomeSum = sumByType("income");
   const expenseSum = sumByType("expense");
   const investSum = sumByType("investment");
   const net = incomeSum - expenseSum;
 
-  const expenseEntries = entriesInPeriod.filter((e) => e.type === "expense");
+  const expenseEntries = effectiveEntries.filter((e) => e.type === "expense");
   const fixedSum = expenseEntries.filter((e) => e.fixed).reduce((sum, e) => sum + e.amount, 0);
   const variableSum = expenseSum - fixedSum;
 
@@ -7044,7 +7103,16 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
     });
     return [...map.entries()].map(([area, sum]) => ({ area, sum })).sort((a, b) => b.sum - a.sum);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entriesInPeriod]);
+  }, [effectiveEntries]);
+
+  // Mit Marie markierte Einträge zählen unverändert in allen Summen oben mit
+  // (Einnahmen/Ausgaben/Netto/Bereiche) - hier nur zusätzlich ihr 50%-Anteil.
+  const marieEntries = effectiveEntries.filter((e) => e.marie);
+  const marieExpenseSum = marieEntries.filter((e) => e.type === "expense").reduce((sum, e) => sum + e.amount, 0);
+  const marieIncomeSum = marieEntries.filter((e) => e.type === "income").reduce((sum, e) => sum + e.amount, 0);
+  const marieExpenseShare = marieExpenseSum * 0.5;
+  const marieIncomeShare = marieIncomeSum * 0.5;
+  const marieNet = marieExpenseShare - marieIncomeShare;
 
   // Verlauf: immer die letzten Perioden bis heute, unabhängig vom oben
   // durchblätterten Zeitraum - so bleibt der Trend ein stabiler Rückblick.
@@ -7054,7 +7122,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
     for (let i = count - 1; i >= 0; i--) {
       const refDate = shiftFinancePeriod(new Date(), periodMode, -i);
       const range = financePeriodRange(refDate, periodMode);
-      const bucketEntries = (financeEntries || []).filter((e) => e.date >= range.startKey && e.date <= range.endKey);
+      const bucketEntries = financeEffectiveEntriesForRange(financeEntries, range.startKey, range.endKey);
       buckets.push({
         key: range.startKey,
         label: periodMode === "year" ? range.label : refDate.toLocaleDateString("de-DE", { month: "short" }),
@@ -7078,9 +7146,11 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
 
   const handleAdd = () => {
     if (!canAdd) return;
+    const isFixed = type === "expense" && fixed;
     const entry = {
       id: `fin_${Date.now()}`,
-      type, amount: parsedAmount, category: category || "", fixed: type === "expense" ? fixed : false,
+      type, amount: parsedAmount, category: category || "", fixed: isFixed,
+      intervalMonths: isFixed ? intervalMonths : 1, marie,
       note: note.trim(), date, createdAt: todayKey(),
     };
     persistFinanceEntries([...(financeEntries || []), entry]);
@@ -7128,7 +7198,31 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
           )}
         </div>
 
+        {type === "expense" && fixed && (
+          <>
+            <select value={intervalMonths} onChange={(e) => setIntervalMonths(Number(e.target.value))} style={{ ...inputStyle, cursor: "pointer" }}>
+              {FINANCE_INTERVAL_OPTIONS.map((option) => <option key={option.value} value={option.value}>Zahlung {option.label}</option>)}
+            </select>
+            {intervalMonths > 1 && (
+              <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: -3, marginBottom: 14 }}>
+                Wird auf {intervalMonths} Monate umgelegt: {amount !== "" && !Number.isNaN(parseFloat(String(amount).replace(",", "."))) ? `${formatMoney(parseFloat(String(amount).replace(",", ".")) / intervalMonths)} €` : "…"} / Monat.
+              </div>
+            )}
+          </>
+        )}
+
         <input type="text" placeholder="Notiz (optional)" value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} />
+
+        <label style={{
+          display: "flex", alignItems: "center", gap: 9, padding: "10px 12px", marginBottom: 14,
+          borderRadius: 9, background: COLORS.bgSoft, border: `1px solid ${COLORS.borderSoft}`, cursor: "pointer",
+        }}>
+          <input type="checkbox" checked={marie} onChange={(e) => setMarie(e.target.checked)} style={{ width: 16, height: 16, margin: 0 }} />
+          <span style={{ fontSize: 12.5 }}>
+            <strong>Mit Marie teilen</strong>
+            <span style={{ color: COLORS.textFaint }}> (50% Anteil - zählt normal in Einnahmen/Ausgaben, taucht zusätzlich im Marie-Bericht auf)</span>
+          </span>
+        </label>
 
         <label style={labelStyle}>Bereich (optional)</label>
         {(financeCategories || []).length > 0 && (
@@ -7163,11 +7257,15 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
       </div>
       <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginBottom: 16 }}>
         Investments fließen wertneutral ein - sie zählen nicht als Einnahme oder Ausgabe und verändern das Netto nicht.
+        Mehrmonatige Fixkosten zählen anteilig in jedem Monat, den sie abdecken, auch wenn hier unten keine Zahlung an diesem Datum steht.
       </div>
 
       {expenseSum > 0 && (
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
           <SectionLabel>Fixkosten vs. variable Kosten</SectionLabel>
+          <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
+            Mehrmonatige Fixkosten (z. B. jährliche Versicherung) sind hier auf die Monate umgelegt, die sie abdecken.
+          </p>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: COLORS.textMuted, marginBottom: 6 }}>
             <span><strong style={{ color: COLORS.text }}>{formatMoney(fixedSum)} €</strong> Fix ({Math.round(fixedSum / expenseSum * 100)}%)</span>
             <span><strong style={{ color: COLORS.text }}>{formatMoney(variableSum)} €</strong> Variabel ({Math.round(variableSum / expenseSum * 100)}%)</span>
@@ -7199,6 +7297,26 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {marieEntries.length > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+          <SectionLabel>Marie</SectionLabel>
+          <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>
+            Mit Marie markierte Einträge zählen ganz normal in Einnahmen/Ausgaben oben mit - hier nur zusätzlich ihr 50%-Anteil.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, marginBottom: marieIncomeSum > 0 || marieNet !== 0 ? 12 : 0 }}>
+            <StatCard label="Ausgaben mit Marie" value={formatMoney(marieExpenseSum)} suffix="€" accent={COLORS.coral} />
+            <StatCard label="Marie übernimmt (50%)" value={formatMoney(marieExpenseShare)} suffix="€" accent={COLORS.violet} />
+            {marieIncomeSum > 0 && <StatCard label="Einnahmen mit Marie" value={formatMoney(marieIncomeSum)} suffix="€" accent={COLORS.mint} />}
+            {marieIncomeSum > 0 && <StatCard label="Ihr Anteil (50%)" value={formatMoney(marieIncomeShare)} suffix="€" accent={COLORS.violet} />}
+          </div>
+          {marieNet !== 0 && (
+            <div style={{ fontSize: 13, fontWeight: 600, color: marieNet > 0 ? COLORS.mint : COLORS.coral }}>
+              {marieNet > 0 ? `Marie schuldet dir ${formatMoney(marieNet)} €` : `Du schuldest Marie ${formatMoney(-marieNet)} €`}
+            </div>
+          )}
         </div>
       )}
 
@@ -7239,7 +7357,10 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                     <strong style={{ color: meta.color }}>{meta.sign}{formatMoney(entry.amount)} €</strong>
                     {" · "}{meta.label}
                     {entry.category ? ` · ${entry.category}` : ""}
-                    {entry.type === "expense" ? (entry.fixed ? " · Fix" : " · Variabel") : ""}
+                    {entry.type === "expense" ? (entry.fixed
+                      ? (entry.intervalMonths > 1 ? ` · Fix (gilt für ${entry.intervalMonths} Monate, ${formatMoney(entry.amount / entry.intervalMonths)} €/Monat)` : " · Fix")
+                      : " · Variabel") : ""}
+                    {entry.marie ? " · Marie 50%" : ""}
                     {" · "}{shortDate(entry.date)}
                     {entry.note ? ` · ${entry.note}` : ""}
                   </span>
@@ -7438,7 +7559,9 @@ function SettingsPage({
     const financeTypeLabels = { income: "Einnahme", expense: "Ausgabe", investment: "Investment" };
     const financeSheet = (financeEntries || []).map((f) => ({
       Datum: f.date, Typ: financeTypeLabels[f.type] || f.type, Betrag: f.amount, Bereich: f.category || "",
-      Art: f.type === "expense" ? (f.fixed ? "Fix" : "Variabel") : "", Notiz: f.note || "",
+      Art: f.type === "expense" ? (f.fixed ? "Fix" : "Variabel") : "",
+      "Zahlungsintervall (Monate)": f.type === "expense" && f.fixed ? (f.intervalMonths || 1) : "",
+      Marie: f.marie ? "Ja" : "Nein", Notiz: f.note || "",
     }));
 
     addSheet("Habits", habitsSheet);
