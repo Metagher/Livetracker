@@ -7119,7 +7119,6 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const marieIncomeSum = marieEntries.filter((e) => e.type === "income").reduce((sum, e) => sum + e.amount, 0);
   const marieExpenseShare = marieExpenseSum * 0.5;
   const marieIncomeShare = marieIncomeSum * 0.5;
-  const marieNet = marieExpenseShare - marieIncomeShare;
 
   // Verlauf: immer die letzten Perioden bis heute, unabhängig vom oben
   // durchblätterten Zeitraum - so bleibt der Trend ein stabiler Rückblick.
@@ -7357,19 +7356,14 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
           <SectionLabel>Marie</SectionLabel>
           <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>
-            Mit Marie markierte Einträge zählen ganz normal in Einnahmen/Ausgaben oben mit - hier nur zusätzlich ihr 50%-Anteil.
+            Mit Marie markierte Einträge zählen ganz normal in Einnahmen/Ausgaben oben mit - hier nur zusätzlich ihr 50%-Anteil als Aufstellung.
           </p>
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, marginBottom: marieIncomeSum > 0 || marieNet !== 0 ? 12 : 0 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10 }}>
             <StatCard label="Ausgaben mit Marie" value={formatMoney(marieExpenseSum)} suffix="€" accent={COLORS.coral} />
             <StatCard label="Marie übernimmt (50%)" value={formatMoney(marieExpenseShare)} suffix="€" accent={COLORS.violet} />
             {marieIncomeSum > 0 && <StatCard label="Einnahmen mit Marie" value={formatMoney(marieIncomeSum)} suffix="€" accent={COLORS.mint} />}
             {marieIncomeSum > 0 && <StatCard label="Ihr Anteil (50%)" value={formatMoney(marieIncomeShare)} suffix="€" accent={COLORS.violet} />}
           </div>
-          {marieNet !== 0 && (
-            <div style={{ fontSize: 13, fontWeight: 600, color: marieNet > 0 ? COLORS.mint : COLORS.coral }}>
-              {marieNet > 0 ? `Marie schuldet dir ${formatMoney(marieNet)} €` : `Du schuldest Marie ${formatMoney(-marieNet)} €`}
-            </div>
-          )}
         </div>
       )}
 
