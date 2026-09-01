@@ -87,7 +87,7 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder, Wallet
+  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder, Wallet, PiggyBank
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, Cell, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -679,6 +679,8 @@ function useLifeOSData() {
   const [shoppingList, setShoppingList] = useState([]);
   const [notes, setNotes] = useState([]);
   const [noteFolders, setNoteFolders] = useState([]);
+  const [financeEntries, setFinanceEntries] = useState([]);
+  const [financeCategories, setFinanceCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -697,7 +699,7 @@ function useLifeOSData() {
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const keys = ["los-habits", "los-entries", "los-achievements", "los-coach", "los-journal", "los-weekly-reports", "los-goals", "los-tasks", "los-persons", "los-categories", "los-person-groups", "los-moods", "los-consumables", "los-shopping-list", "los-notes", "los-note-folders"];
+      const keys = ["los-habits", "los-entries", "los-achievements", "los-coach", "los-journal", "los-weekly-reports", "los-goals", "los-tasks", "los-persons", "los-categories", "los-person-groups", "los-moods", "los-consumables", "los-shopping-list", "los-notes", "los-note-folders", "los-finance-entries", "los-finance-categories"];
       const stored = await window.storage.getMany(keys);
       setHabits(readStoredJSON(stored, "los-habits", []));
       setEntries(readStoredJSON(stored, "los-entries", {}));
@@ -715,6 +717,8 @@ function useLifeOSData() {
       setShoppingList(readStoredJSON(stored, "los-shopping-list", []));
       setNotes(readStoredJSON(stored, "los-notes", []));
       setNoteFolders(readStoredJSON(stored, "los-note-folders", []));
+      setFinanceEntries(readStoredJSON(stored, "los-finance-entries", []));
+      setFinanceCategories(readStoredJSON(stored, "los-finance-categories", []));
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -795,10 +799,18 @@ function useLifeOSData() {
     setNoteFolders(next);
     await enqueueWrite("los-note-folders", next);
   }, [enqueueWrite]);
+  const persistFinanceEntries = useCallback(async (next) => {
+    setFinanceEntries(next);
+    await enqueueWrite("los-finance-entries", next);
+  }, [enqueueWrite]);
+  const persistFinanceCategories = useCallback(async (next) => {
+    setFinanceCategories(next);
+    await enqueueWrite("los-finance-categories", next);
+  }, [enqueueWrite]);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories,
     refresh,
   };
 }
@@ -6961,6 +6973,295 @@ function NotesPage({ notes, persistNotes, noteFolders, persistNoteFolders }) {
 }
 
 /* ============================================================
+   @section FINANCE-PAGE — Einnahmen/Ausgaben/Investments je Eintrag, Bericht
+   nach Monat/Jahr: Netto, Fixkosten vs. variable Kosten, Ausgaben nach
+   Bereich. Investments fließen wertneutral ein (zählen weder als Einnahme
+   noch als Ausgabe), erscheinen aber als eigene Kennzahl im Bericht.
+   ============================================================ */
+const FINANCE_TYPE_META = {
+  income: { label: "Einnahme", color: COLORS.mint, sign: "+" },
+  expense: { label: "Ausgabe", color: COLORS.coral, sign: "-" },
+  investment: { label: "Investment", color: COLORS.violet, sign: "" },
+};
+const FINANCE_NO_AREA = "Ohne Bereich";
+
+function financePeriodRange(refDate, mode) {
+  if (mode === "year") {
+    const year = refDate.getFullYear();
+    return { startKey: `${year}-01-01`, endKey: `${year}-12-31`, label: `${year}` };
+  }
+  const year = refDate.getFullYear();
+  const month = refDate.getMonth();
+  const start = new Date(year, month, 1);
+  const end = new Date(year, month + 1, 0);
+  return { startKey: toKey(start), endKey: toKey(end), label: start.toLocaleDateString("de-DE", { month: "long", year: "numeric" }) };
+}
+function shiftFinancePeriod(refDate, mode, direction) {
+  const next = new Date(refDate);
+  if (mode === "year") next.setFullYear(next.getFullYear() + direction);
+  else next.setMonth(next.getMonth() + direction);
+  return next;
+}
+
+function FinancePage({ financeEntries, persistFinanceEntries, financeCategories, onAddFinanceCategory, isMobile }) {
+  const [periodMode, setPeriodMode] = useState("month");
+  const [periodDate, setPeriodDate] = useState(() => new Date());
+  const [type, setType] = useState("expense");
+  const [amount, setAmount] = useState("");
+  const [category, setCategory] = useState("");
+  const [newCategoryInput, setNewCategoryInput] = useState("");
+  const [fixed, setFixed] = useState(false);
+  const [date, setDate] = useState(todayKey());
+  const [note, setNote] = useState("");
+  const [confirmId, setConfirmId] = useState(null);
+
+  const { startKey, endKey, label } = useMemo(() => financePeriodRange(periodDate, periodMode), [periodDate, periodMode]);
+
+  const entriesInPeriod = useMemo(
+    () => (financeEntries || []).filter((entry) => entry.date >= startKey && entry.date <= endKey),
+    [financeEntries, startKey, endKey]
+  );
+  const sortedEntries = useMemo(
+    () => [...entriesInPeriod].sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || "").localeCompare(a.createdAt || "")),
+    [entriesInPeriod]
+  );
+
+  const sumByType = (t) => entriesInPeriod.filter((e) => e.type === t).reduce((sum, e) => sum + e.amount, 0);
+  const incomeSum = sumByType("income");
+  const expenseSum = sumByType("expense");
+  const investSum = sumByType("investment");
+  const net = incomeSum - expenseSum;
+
+  const expenseEntries = entriesInPeriod.filter((e) => e.type === "expense");
+  const fixedSum = expenseEntries.filter((e) => e.fixed).reduce((sum, e) => sum + e.amount, 0);
+  const variableSum = expenseSum - fixedSum;
+
+  const byArea = useMemo(() => {
+    const map = new Map();
+    expenseEntries.forEach((e) => {
+      const area = (e.category || "").trim() || FINANCE_NO_AREA;
+      map.set(area, (map.get(area) || 0) + e.amount);
+    });
+    return [...map.entries()].map(([area, sum]) => ({ area, sum })).sort((a, b) => b.sum - a.sum);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entriesInPeriod]);
+
+  // Verlauf: immer die letzten Perioden bis heute, unabhängig vom oben
+  // durchblätterten Zeitraum - so bleibt der Trend ein stabiler Rückblick.
+  const trend = useMemo(() => {
+    const count = periodMode === "year" ? 5 : 6;
+    const buckets = [];
+    for (let i = count - 1; i >= 0; i--) {
+      const refDate = shiftFinancePeriod(new Date(), periodMode, -i);
+      const range = financePeriodRange(refDate, periodMode);
+      const bucketEntries = (financeEntries || []).filter((e) => e.date >= range.startKey && e.date <= range.endKey);
+      buckets.push({
+        key: range.startKey,
+        label: periodMode === "year" ? range.label : refDate.toLocaleDateString("de-DE", { month: "short" }),
+        einnahmen: bucketEntries.filter((e) => e.type === "income").reduce((s, e) => s + e.amount, 0),
+        ausgaben: bucketEntries.filter((e) => e.type === "expense").reduce((s, e) => s + e.amount, 0),
+      });
+    }
+    return buckets;
+  }, [financeEntries, periodMode]);
+
+  const parsedAmount = parseFloat(String(amount).replace(",", "."));
+  const canAdd = amount !== "" && !Number.isNaN(parsedAmount) && parsedAmount > 0;
+
+  const addCategoryAndSelect = () => {
+    const trimmed = newCategoryInput.trim();
+    if (!trimmed) return;
+    if (!(financeCategories || []).includes(trimmed)) onAddFinanceCategory(trimmed);
+    setCategory(trimmed);
+    setNewCategoryInput("");
+  };
+
+  const handleAdd = () => {
+    if (!canAdd) return;
+    const entry = {
+      id: `fin_${Date.now()}`,
+      type, amount: parsedAmount, category: category || "", fixed: type === "expense" ? fixed : false,
+      note: note.trim(), date, createdAt: todayKey(),
+    };
+    persistFinanceEntries([...(financeEntries || []), entry]);
+    setAmount("");
+    setNote("");
+  };
+
+  const deleteEntry = (id) => persistFinanceEntries((financeEntries || []).filter((e) => e.id !== id));
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Finanzen</h1>
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Einnahmen, Ausgaben und Investments im Überblick.</div>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <ToggleChip active={periodMode === "month"} onClick={() => setPeriodMode("month")}>Monat</ToggleChip>
+          <ToggleChip active={periodMode === "year"} onClick={() => setPeriodMode("year")}>Jahr</ToggleChip>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, marginBottom: 18 }}>
+        <IconButton onClick={() => setPeriodDate((d) => shiftFinancePeriod(d, periodMode, -1))} title="Vorheriger Zeitraum"><ChevronLeft size={16} /></IconButton>
+        <div style={{ fontSize: 15, fontWeight: 600, minWidth: 140, textAlign: "center" }}>{label}</div>
+        <IconButton onClick={() => setPeriodDate((d) => shiftFinancePeriod(d, periodMode, 1))} title="Nächster Zeitraum"><ChevronRight size={16} /></IconButton>
+      </div>
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+        <SectionLabel>Neuer Eintrag</SectionLabel>
+        <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
+          {Object.entries(FINANCE_TYPE_META).map(([key, meta]) => (
+            <ToggleChip key={key} active={type === key} onClick={() => setType(key)} accent={meta.color}>{meta.label}</ToggleChip>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+          <input type="number" min="0" step="0.01" placeholder="Betrag (€)" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: "1 1 130px" }} />
+          <input type="date" max={todayKey()} value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: "1 1 150px" }} />
+          {type === "expense" && (
+            <div style={{ display: "flex", gap: 6, flex: "1 1 190px" }}>
+              <ToggleChip active={!fixed} onClick={() => setFixed(false)}>Variabel</ToggleChip>
+              <ToggleChip active={fixed} onClick={() => setFixed(true)}>Fixkosten</ToggleChip>
+            </div>
+          )}
+        </div>
+
+        <input type="text" placeholder="Notiz (optional)" value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} />
+
+        <label style={labelStyle}>Bereich (optional)</label>
+        {(financeCategories || []).length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 8 }}>
+            {financeCategories.map((cat) => (
+              <ToggleChip key={cat} active={category === cat} onClick={() => setCategory((current) => current === cat ? "" : cat)} accent={categoryColor(cat)}>{cat}</ToggleChip>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <input
+            type="text" placeholder="Neuer Bereich …" value={newCategoryInput}
+            onChange={(e) => setNewCategoryInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCategoryAndSelect(); } }}
+            style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+          />
+          <button type="button" disabled={!newCategoryInput.trim()} onClick={addCategoryAndSelect} style={{ ...ghostBtn, opacity: newCategoryInput.trim() ? 1 : 0.5, cursor: newCategoryInput.trim() ? "pointer" : "not-allowed", flexShrink: 0 }}>
+            Hinzufügen
+          </button>
+        </div>
+
+        <button disabled={!canAdd} onClick={handleAdd} style={{ ...primaryBtn, opacity: canAdd ? 1 : 0.5, cursor: canAdd ? "pointer" : "not-allowed" }}>
+          Eintragen
+        </button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, marginBottom: 8 }}>
+        <StatCard label="Einnahmen" value={formatMoney(incomeSum)} suffix="€" accent={COLORS.mint} />
+        <StatCard label="Ausgaben" value={formatMoney(expenseSum)} suffix="€" accent={COLORS.coral} />
+        <StatCard label="Netto" value={`${net >= 0 ? "+" : ""}${formatMoney(net)}`} suffix="€" accent={net >= 0 ? COLORS.mint : COLORS.coral} />
+        <StatCard label="Investiert" value={formatMoney(investSum)} suffix="€" accent={COLORS.violet} />
+      </div>
+      <div style={{ fontSize: 11.5, color: COLORS.textFaint, marginBottom: 16 }}>
+        Investments fließen wertneutral ein - sie zählen nicht als Einnahme oder Ausgabe und verändern das Netto nicht.
+      </div>
+
+      {expenseSum > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+          <SectionLabel>Fixkosten vs. variable Kosten</SectionLabel>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: COLORS.textMuted, marginBottom: 6 }}>
+            <span><strong style={{ color: COLORS.text }}>{formatMoney(fixedSum)} €</strong> Fix ({Math.round(fixedSum / expenseSum * 100)}%)</span>
+            <span><strong style={{ color: COLORS.text }}>{formatMoney(variableSum)} €</strong> Variabel ({Math.round(variableSum / expenseSum * 100)}%)</span>
+          </div>
+          <div style={{ display: "flex", height: 10, borderRadius: 6, overflow: "hidden", background: COLORS.bgSoft }}>
+            <div style={{ width: `${fixedSum / expenseSum * 100}%`, background: COLORS.ember2 }} />
+            <div style={{ width: `${variableSum / expenseSum * 100}%`, background: COLORS.violet }} />
+          </div>
+        </div>
+      )}
+
+      {byArea.length > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+          <SectionLabel>Ausgaben nach Bereich</SectionLabel>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {byArea.map((row) => (
+              <div key={row.area}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 5, fontSize: 12.5 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
+                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: categoryColor(row.area) }} />{row.area}
+                  </span>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", color: COLORS.textMuted }}>
+                    {formatMoney(row.sum)} € · {Math.round(row.sum / expenseSum * 100)}%
+                  </span>
+                </div>
+                <div style={{ height: 8, background: COLORS.bgSoft, borderRadius: 5, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${row.sum / expenseSum * 100}%`, background: categoryColor(row.area), borderRadius: 5 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+        <SectionLabel>Verlauf</SectionLabel>
+        <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
+          Einnahmen und Ausgaben der letzten {periodMode === "year" ? "5 Jahre" : "6 Monate"} bis heute.
+        </p>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={trend} margin={{ top: 8, right: 4, left: -20, bottom: 0 }}>
+            <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="label" tick={{ fill: COLORS.textFaint, fontSize: 10 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fill: COLORS.textFaint, fontSize: 10 }} axisLine={false} tickLine={false} />
+            <Tooltip
+              contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }}
+              formatter={(value, name) => [`${formatMoney(value)} €`, name === "einnahmen" ? "Einnahmen" : "Ausgaben"]}
+            />
+            <Bar dataKey="einnahmen" fill={COLORS.mint} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="ausgaben" fill={COLORS.coral} radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18 }}>
+        <SectionLabel>Einträge · {label}</SectionLabel>
+        {sortedEntries.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Einträge in diesem Zeitraum.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {sortedEntries.map((entry) => {
+              const meta = FINANCE_TYPE_META[entry.type] || FINANCE_TYPE_META.expense;
+              return (
+                <div key={entry.id} style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                  padding: "8px 10px", borderRadius: 9, background: COLORS.bgSoft,
+                }}>
+                  <span style={{ fontSize: 12.5, color: COLORS.textMuted, minWidth: 0 }}>
+                    <strong style={{ color: meta.color }}>{meta.sign}{formatMoney(entry.amount)} €</strong>
+                    {" · "}{meta.label}
+                    {entry.category ? ` · ${entry.category}` : ""}
+                    {entry.type === "expense" ? (entry.fixed ? " · Fix" : " · Variabel") : ""}
+                    {" · "}{shortDate(entry.date)}
+                    {entry.note ? ` · ${entry.note}` : ""}
+                  </span>
+                  {confirmId === entry.id ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => setConfirmId(null)} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11 }}>Abbrechen</button>
+                      <button onClick={() => { deleteEntry(entry.id); setConfirmId(null); }} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11, color: COLORS.coral, borderColor: COLORS.coral }}>Löschen</button>
+                    </div>
+                  ) : (
+                    <IconButton onClick={() => setConfirmId(entry.id)} title="Eintrag löschen" danger><Trash2 size={13} /></IconButton>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    @section SETTINGS-PAGE — Export/Import (JSON), Kategorie-Verwaltung, Supabase/Anthropic-Key (ConnectionSettings)
    EINSTELLUNGEN / DATENSICHERUNG
    Export als JSON-Download, Import mit Vorschau + Bestätigung
@@ -6990,8 +7291,8 @@ function downloadJSON(filename, obj) {
 }
 
 function SettingsPage({
-  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders,
-  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders,
+  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories,
+  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories,
   onAnthropicKeyChange,
 }) {
   const fileInputRef = useRef(null);
@@ -7002,7 +7303,7 @@ function SettingsPage({
   const handleExport = () => {
     const payload = {
       app: "life-os", version: 1, exportedAt: new Date().toISOString(),
-      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders },
+      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories },
     };
     downloadJSON(`life-os-backup-${todayKey()}.json`, payload);
   };
@@ -7134,6 +7435,12 @@ function SettingsPage({
       "Zuletzt geändert": n.updatedAt ? new Date(n.updatedAt).toLocaleString("de-DE") : "",
     }));
 
+    const financeTypeLabels = { income: "Einnahme", expense: "Ausgabe", investment: "Investment" };
+    const financeSheet = (financeEntries || []).map((f) => ({
+      Datum: f.date, Typ: financeTypeLabels[f.type] || f.type, Betrag: f.amount, Bereich: f.category || "",
+      Art: f.type === "expense" ? (f.fixed ? "Fix" : "Variabel") : "", Notiz: f.note || "",
+    }));
+
     addSheet("Habits", habitsSheet);
     addSheet("Habit-Einträge", entriesSheet);
     addSheet("Aufgaben", tasksSheet);
@@ -7149,6 +7456,7 @@ function SettingsPage({
     addSheet("Vorräte", consumablesSheet);
     addSheet("Einkaufsliste", shoppingSheet);
     addSheet("Notizen", notesSheet);
+    addSheet("Finanzen", financeSheet);
 
     XLSX.writeFile(wb, `lifetracker-export-${todayKey()}.xlsx`);
   };
@@ -7194,6 +7502,8 @@ function SettingsPage({
     await persistShoppingList(Array.isArray(pendingImport.shoppingList) ? pendingImport.shoppingList : []);
     await persistNotes(Array.isArray(pendingImport.notes) ? pendingImport.notes : []);
     await persistNoteFolders(Array.isArray(pendingImport.noteFolders) ? pendingImport.noteFolders : []);
+    await persistFinanceEntries(Array.isArray(pendingImport.financeEntries) ? pendingImport.financeEntries : []);
+    await persistFinanceCategories(Array.isArray(pendingImport.financeCategories) ? pendingImport.financeCategories : []);
     setPendingImport(null);
     setImportSuccess(true);
     setTimeout(() => setImportSuccess(false), 4000);
@@ -7687,6 +7997,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
     { key: "persons", label: "Personen", Icon: Users },
+    { key: "finance", label: "Finanzen", Icon: PiggyBank },
     { key: "journal", label: "Journal", Icon: BookOpen },
     { key: "notes", label: "Notizen", Icon: FileText },
     ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
@@ -7756,6 +8067,7 @@ function BottomNav({ page, setPage, hasCoach }) {
     { key: "habits", label: "Habits", Icon: ListChecks },
     { key: "goals", label: "Goals", Icon: Target },
     { key: "persons", label: "Personen", Icon: Users },
+    { key: "finance", label: "Finanzen", Icon: PiggyBank },
     { key: "journal", label: "Journal", Icon: BookOpen },
     { key: "notes", label: "Notizen", Icon: FileText },
     ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
@@ -7831,8 +8143,8 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
    ============================================================ */
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories,
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
@@ -7844,6 +8156,10 @@ export default function LifeOS() {
   const addPersonGroup = (name) => {
     if (!name || personGroups.includes(name)) return;
     persistPersonGroups([...personGroups, name]);
+  };
+  const addFinanceCategory = (name) => {
+    if (!name || financeCategories.includes(name)) return;
+    persistFinanceCategories([...financeCategories, name]);
   };
   const [hasCoachKey, setHasCoachKey] = useState(() => !!getAnthropicKey());
   const refreshCoachKey = useCallback(() => setHasCoachKey(!!getAnthropicKey()), []);
@@ -8052,14 +8368,15 @@ export default function LifeOS() {
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} statsByHabitId={statsByHabitId} currentDateKey={currentDateKey} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} isMobile={isMobile} />}
+          {page === "finance" && <FinancePage financeEntries={financeEntries} persistFinanceEntries={persistFinanceEntries} financeCategories={financeCategories} onAddFinanceCategory={addFinanceCategory} isMobile={isMobile} />}
           {page === "notes" && <NotesPage notes={notes} persistNotes={persistNotes} noteFolders={noteFolders} persistNoteFolders={persistNoteFolders} />}
           {page === "settings" && (
             <SettingsPage
               habits={habits} entries={entries} achievements={achievements} coach={coach}
-              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList} notes={notes} noteFolders={noteFolders}
+              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList} notes={notes} noteFolders={noteFolders} financeEntries={financeEntries} financeCategories={financeCategories}
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
               persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
-              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables} persistShoppingList={persistShoppingList} persistNotes={persistNotes} persistNoteFolders={persistNoteFolders}
+              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables} persistShoppingList={persistShoppingList} persistNotes={persistNotes} persistNoteFolders={persistNoteFolders} persistFinanceEntries={persistFinanceEntries} persistFinanceCategories={persistFinanceCategories}
               onAnthropicKeyChange={refreshCoachKey}
             />
           )}
