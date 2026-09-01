@@ -6987,12 +6987,7 @@ const FINANCE_TYPE_META = {
   investment: { label: "Investment", color: COLORS.violet, sign: "" },
 };
 const FINANCE_NO_AREA = "Ohne Bereich";
-const FINANCE_INTERVAL_OPTIONS = [
-  { value: 1, label: "gilt für 1 Monat" },
-  { value: 3, label: "gilt für 3 Monate" },
-  { value: 6, label: "gilt für 6 Monate" },
-  { value: 12, label: "gilt für 12 Monate" },
-];
+const FINANCE_COVERAGE_WINDOW = 18;
 
 function financePeriodRange(refDate, mode) {
   if (mode === "year") {
@@ -7028,18 +7023,28 @@ function financeMonthsBetween(startKey, endKey) {
   }
   return months;
 }
+const financeMonthLabel = (monthKey) => {
+  const [y, m] = monthKey.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("de-DE", { month: "short", year: "2-digit" });
+};
+// Welche Monate eine Fixkosten-Zahlung abdeckt: die explizit ausgewählten
+// Monate (coverageMonths), oder rückwärtskompatibel für ältere Einträge ohne
+// dieses Feld ein fortlaufendes Intervall ab dem Zahlungsmonat.
+function financeCoverageMonths(entry) {
+  if (Array.isArray(entry.coverageMonths) && entry.coverageMonths.length > 0) return entry.coverageMonths;
+  const interval = entry.intervalMonths || 1;
+  const paymentMonth = financeMonthKeyOf(entry.date);
+  return Array.from({ length: interval }, (_, i) => financeAddMonths(paymentMonth, i));
+}
 // Für eine mehrmonatige Fixkosten-Zahlung (z. B. jährliche Versicherung) den
-// anteiligen Monatsbetrag für jeden Monat liefern, den die Zahlung abdeckt
-// (ab dem Zahlungsmonat vorausschauend) - alle anderen Einträge zählen nur
-// in ihrem tatsächlichen Buchungsmonat.
+// anteiligen Monatsbetrag für jeden Monat liefern, den die Zahlung abdeckt -
+// alle anderen Einträge zählen nur in ihrem tatsächlichen Buchungsmonat.
 function financeEffectiveEntriesForMonth(entries, monthKey) {
   const result = [];
   (entries || []).forEach((entry) => {
     if (entry.type === "expense" && entry.fixed) {
-      const interval = entry.intervalMonths || 1;
-      const paymentMonth = financeMonthKeyOf(entry.date);
-      const coveredMonths = Array.from({ length: interval }, (_, i) => financeAddMonths(paymentMonth, i));
-      if (coveredMonths.includes(monthKey)) result.push({ ...entry, amount: entry.amount / interval });
+      const months = financeCoverageMonths(entry);
+      if (months.includes(monthKey)) result.push({ ...entry, amount: entry.amount / months.length });
     } else if (financeMonthKeyOf(entry.date) === monthKey) {
       result.push(entry);
     }
@@ -7058,7 +7063,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const [category, setCategory] = useState("");
   const [newCategoryInput, setNewCategoryInput] = useState("");
   const [fixed, setFixed] = useState(false);
-  const [intervalMonths, setIntervalMonths] = useState(1);
+  const [coverageMonths, setCoverageMonths] = useState([]);
   const [marie, setMarie] = useState(false);
   const [date, setDate] = useState(todayKey());
   const [note, setNote] = useState("");
@@ -7136,7 +7141,19 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   }, [financeEntries, periodMode]);
 
   const parsedAmount = parseFloat(String(amount).replace(",", "."));
-  const canSubmit = amount !== "" && !Number.isNaN(parsedAmount) && parsedAmount > 0;
+  const isFixed = type === "expense" && fixed;
+  const canSubmit = amount !== "" && !Number.isNaN(parsedAmount) && parsedAmount > 0 && !(isFixed && coverageMonths.length === 0);
+
+  // Auswahlfenster für die Monats-Chips bei Fixkosten - rund um das
+  // Buchungsdatum (auch ein paar Monate davor, falls die Zahlung
+  // nachträglich für bereits vergangene Monate gilt).
+  const coverageWindow = useMemo(() => {
+    const start = financeAddMonths(financeMonthKeyOf(date || todayKey()), -3);
+    return Array.from({ length: FINANCE_COVERAGE_WINDOW }, (_, i) => financeAddMonths(start, i));
+  }, [date]);
+  const toggleCoverageMonth = (monthKey) => setCoverageMonths((current) =>
+    current.includes(monthKey) ? current.filter((m) => m !== monthKey) : [...current, monthKey].sort()
+  );
 
   const addCategoryAndSelect = () => {
     const trimmed = newCategoryInput.trim();
@@ -7149,7 +7166,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const resetForm = () => {
     setEditingId(null);
     setType("expense"); setAmount(""); setCategory(""); setFixed(false);
-    setIntervalMonths(1); setMarie(false); setDate(todayKey()); setNote("");
+    setCoverageMonths([]); setMarie(false); setDate(todayKey()); setNote("");
   };
 
   const startEdit = (entry) => {
@@ -7158,7 +7175,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
     setAmount(String(entry.amount));
     setCategory(entry.category || "");
     setFixed(entry.type === "expense" ? !!entry.fixed : false);
-    setIntervalMonths(entry.intervalMonths || 1);
+    setCoverageMonths(entry.type === "expense" && entry.fixed ? financeCoverageMonths(entry) : []);
     setMarie(!!entry.marie);
     setDate(entry.date);
     setNote(entry.note || "");
@@ -7167,10 +7184,9 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
 
   const handleSubmit = () => {
     if (!canSubmit) return;
-    const isFixed = type === "expense" && fixed;
     const fields = {
       type, amount: parsedAmount, category: category || "", fixed: isFixed,
-      intervalMonths: isFixed ? intervalMonths : 1, marie,
+      coverageMonths: isFixed ? coverageMonths : [], marie,
       note: note.trim(), date,
     };
     if (editingId) {
@@ -7224,21 +7240,24 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
           {type === "expense" && (
             <div style={{ display: "flex", gap: 6, flex: "1 1 190px" }}>
               <ToggleChip active={!fixed} onClick={() => setFixed(false)}>Variabel</ToggleChip>
-              <ToggleChip active={fixed} onClick={() => setFixed(true)}>Fixkosten</ToggleChip>
+              <ToggleChip active={fixed} onClick={() => { setFixed(true); setCoverageMonths((current) => current.length ? current : [financeMonthKeyOf(date)]); }}>Fixkosten</ToggleChip>
             </div>
           )}
         </div>
 
         {type === "expense" && fixed && (
           <>
-            <select value={intervalMonths} onChange={(e) => setIntervalMonths(Number(e.target.value))} style={{ ...inputStyle, cursor: "pointer" }}>
-              {FINANCE_INTERVAL_OPTIONS.map((option) => <option key={option.value} value={option.value}>Zahlung {option.label}</option>)}
-            </select>
-            {intervalMonths > 1 && (
-              <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: -3, marginBottom: 14 }}>
-                Wird auf {intervalMonths} Monate umgelegt: {amount !== "" && !Number.isNaN(parseFloat(String(amount).replace(",", "."))) ? `${formatMoney(parseFloat(String(amount).replace(",", ".")) / intervalMonths)} €` : "…"} / Monat.
-              </div>
-            )}
+            <label style={labelStyle}>Gilt für welche Monate</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+              {coverageWindow.map((m) => (
+                <ToggleChip key={m} active={coverageMonths.includes(m)} onClick={() => toggleCoverageMonth(m)}>{financeMonthLabel(m)}</ToggleChip>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.textFaint, marginTop: -3, marginBottom: 14 }}>
+              {coverageMonths.length === 0
+                ? "Mindestens einen Monat auswählen."
+                : `${coverageMonths.length} ${coverageMonths.length === 1 ? "Monat" : "Monate"} ausgewählt${canSubmit ? ` · ${formatMoney(parsedAmount / coverageMonths.length)} €/Monat` : ""}.`}
+            </div>
           </>
         )}
 
@@ -7382,6 +7401,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {sortedEntries.map((entry) => {
               const meta = FINANCE_TYPE_META[entry.type] || FINANCE_TYPE_META.expense;
+              const months = entry.type === "expense" && entry.fixed ? financeCoverageMonths(entry) : null;
               return (
                 <div key={entry.id} style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
@@ -7393,7 +7413,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                     {" · "}{meta.label}
                     {entry.category ? ` · ${entry.category}` : ""}
                     {entry.type === "expense" ? (entry.fixed
-                      ? (entry.intervalMonths > 1 ? ` · Fix (gilt für ${entry.intervalMonths} Monate, ${formatMoney(entry.amount / entry.intervalMonths)} €/Monat)` : " · Fix")
+                      ? (months.length > 1 ? ` · Fix (gilt für ${months.map(financeMonthLabel).join(", ")}, ${formatMoney(entry.amount / months.length)} €/Monat)` : " · Fix")
                       : " · Variabel") : ""}
                     {entry.marie ? " · Marie 50%" : ""}
                     {" · "}{shortDate(entry.date)}
@@ -7598,7 +7618,7 @@ function SettingsPage({
     const financeSheet = (financeEntries || []).map((f) => ({
       Datum: f.date, Typ: financeTypeLabels[f.type] || f.type, Betrag: f.amount, Bereich: f.category || "",
       Art: f.type === "expense" ? (f.fixed ? "Fix" : "Variabel") : "",
-      "Zahlungsintervall (Monate)": f.type === "expense" && f.fixed ? (f.intervalMonths || 1) : "",
+      "Gilt für Monate": f.type === "expense" && f.fixed ? financeCoverageMonths(f).map(financeMonthLabel).join(", ") : "",
       Marie: f.marie ? "Ja" : "Nein", Notiz: f.note || "",
     }));
 
