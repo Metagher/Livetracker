@@ -7063,6 +7063,8 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const [date, setDate] = useState(todayKey());
   const [note, setNote] = useState("");
   const [confirmId, setConfirmId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const formRef = useRef(null);
 
   const { startKey, endKey, label } = useMemo(() => financePeriodRange(periodDate, periodMode), [periodDate, periodMode]);
 
@@ -7134,7 +7136,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   }, [financeEntries, periodMode]);
 
   const parsedAmount = parseFloat(String(amount).replace(",", "."));
-  const canAdd = amount !== "" && !Number.isNaN(parsedAmount) && parsedAmount > 0;
+  const canSubmit = amount !== "" && !Number.isNaN(parsedAmount) && parsedAmount > 0;
 
   const addCategoryAndSelect = () => {
     const trimmed = newCategoryInput.trim();
@@ -7144,21 +7146,47 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
     setNewCategoryInput("");
   };
 
-  const handleAdd = () => {
-    if (!canAdd) return;
+  const resetForm = () => {
+    setEditingId(null);
+    setType("expense"); setAmount(""); setCategory(""); setFixed(false);
+    setIntervalMonths(1); setMarie(false); setDate(todayKey()); setNote("");
+  };
+
+  const startEdit = (entry) => {
+    setEditingId(entry.id);
+    setType(entry.type);
+    setAmount(String(entry.amount));
+    setCategory(entry.category || "");
+    setFixed(entry.type === "expense" ? !!entry.fixed : false);
+    setIntervalMonths(entry.intervalMonths || 1);
+    setMarie(!!entry.marie);
+    setDate(entry.date);
+    setNote(entry.note || "");
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
     const isFixed = type === "expense" && fixed;
-    const entry = {
-      id: `fin_${Date.now()}`,
+    const fields = {
       type, amount: parsedAmount, category: category || "", fixed: isFixed,
       intervalMonths: isFixed ? intervalMonths : 1, marie,
-      note: note.trim(), date, createdAt: todayKey(),
+      note: note.trim(), date,
     };
-    persistFinanceEntries([...(financeEntries || []), entry]);
+    if (editingId) {
+      persistFinanceEntries((financeEntries || []).map((e) => (e.id === editingId ? { ...e, ...fields } : e)));
+      setEditingId(null);
+    } else {
+      persistFinanceEntries([...(financeEntries || []), { id: `fin_${Date.now()}`, ...fields, createdAt: todayKey() }]);
+    }
     setAmount("");
     setNote("");
   };
 
-  const deleteEntry = (id) => persistFinanceEntries((financeEntries || []).filter((e) => e.id !== id));
+  const deleteEntry = (id) => {
+    persistFinanceEntries((financeEntries || []).filter((e) => e.id !== id));
+    if (editingId === id) resetForm();
+  };
 
   return (
     <div>
@@ -7179,8 +7207,11 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
         <IconButton onClick={() => setPeriodDate((d) => shiftFinancePeriod(d, periodMode, 1))} title="Nächster Zeitraum"><ChevronRight size={16} /></IconButton>
       </div>
 
-      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
-        <SectionLabel>Neuer Eintrag</SectionLabel>
+      <div ref={formRef} style={{
+        background: COLORS.surface, borderRadius: 16, padding: 18, marginBottom: 16,
+        border: `1px solid ${editingId ? COLORS.violet : COLORS.borderSoft}`,
+      }}>
+        <SectionLabel>{editingId ? "Eintrag bearbeiten" : "Neuer Eintrag"}</SectionLabel>
         <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
           {Object.entries(FINANCE_TYPE_META).map(([key, meta]) => (
             <ToggleChip key={key} active={type === key} onClick={() => setType(key)} accent={meta.color}>{meta.label}</ToggleChip>
@@ -7244,9 +7275,12 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
           </button>
         </div>
 
-        <button disabled={!canAdd} onClick={handleAdd} style={{ ...primaryBtn, opacity: canAdd ? 1 : 0.5, cursor: canAdd ? "pointer" : "not-allowed" }}>
-          Eintragen
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button disabled={!canSubmit} onClick={handleSubmit} style={{ ...primaryBtn, opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? "pointer" : "not-allowed" }}>
+            {editingId ? "Aktualisieren" : "Eintragen"}
+          </button>
+          {editingId && <button onClick={resetForm} style={ghostBtn}>Abbrechen</button>}
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, marginBottom: 8 }}>
@@ -7352,6 +7386,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                 <div key={entry.id} style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
                   padding: "8px 10px", borderRadius: 9, background: COLORS.bgSoft,
+                  outline: editingId === entry.id ? `1px solid ${COLORS.violet}` : "none",
                 }}>
                   <span style={{ fontSize: 12.5, color: COLORS.textMuted, minWidth: 0 }}>
                     <strong style={{ color: meta.color }}>{meta.sign}{formatMoney(entry.amount)} €</strong>
@@ -7370,7 +7405,10 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                       <button onClick={() => { deleteEntry(entry.id); setConfirmId(null); }} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11, color: COLORS.coral, borderColor: COLORS.coral }}>Löschen</button>
                     </div>
                   ) : (
-                    <IconButton onClick={() => setConfirmId(entry.id)} title="Eintrag löschen" danger><Trash2 size={13} /></IconButton>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <IconButton onClick={() => startEdit(entry)} title="Eintrag bearbeiten"><Pencil size={13} /></IconButton>
+                      <IconButton onClick={() => setConfirmId(entry.id)} title="Eintrag löschen" danger><Trash2 size={13} /></IconButton>
+                    </div>
                   )}
                 </div>
               );
