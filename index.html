@@ -7134,8 +7134,10 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   const marieIncomeShare = marieIncomeSum * 0.5;
 
   // Verknüpfte Einträge (z. B. eine Ausgabe und die passende Einnahme) tragen
-  // dieselbe frei vergebene linkId - hier über alle Zeiträume hinweg gemeinsam
-  // ausgewertet, unabhängig vom oben durchblätterten Zeitraum.
+  // dieselbe frei vergebene linkId. Angezeigt werden nur Gruppen mit
+  // mindestens einem Eintrag im aktuell ausgewählten Zeitraum; die Summen
+  // einer angezeigten Gruppe zählen dann aber weiterhin alle ihre Einträge
+  // über alle Zeiträume hinweg.
   const allLinkIds = useMemo(() => {
     const set = new Set();
     (financeEntries || []).forEach((e) => { if (e.linkId) set.add(e.linkId); });
@@ -7150,13 +7152,18 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
       if (!map.has(id)) map.set(id, []);
       map.get(id).push(e);
     });
-    return [...map.entries()].map(([id, groupEntries]) => {
-      const income = groupEntries.filter((e) => e.type === "income").reduce((s, e) => s + e.amount, 0);
-      const expense = groupEntries.filter((e) => e.type === "expense").reduce((s, e) => s + e.amount, 0);
-      const invest = groupEntries.filter((e) => e.type === "investment").reduce((s, e) => s + e.amount, 0);
-      return { linkId: id, entries: groupEntries, income, expense, invest, net: income - expense, count: groupEntries.length };
-    }).sort((a, b) => a.linkId.localeCompare(b.linkId, "de"));
-  }, [financeEntries]);
+    return [...map.entries()]
+      // Nur Gruppen anzeigen, bei denen mindestens ein Eintrag im oben
+      // ausgewählten Zeitraum liegt - sonst ist die Gruppe für die aktuelle
+      // Auswahl nicht relevant und wird ausgeblendet.
+      .filter(([, groupEntries]) => groupEntries.some((e) => e.date >= startKey && e.date <= endKey))
+      .map(([id, groupEntries]) => {
+        const income = groupEntries.filter((e) => e.type === "income").reduce((s, e) => s + e.amount, 0);
+        const expense = groupEntries.filter((e) => e.type === "expense").reduce((s, e) => s + e.amount, 0);
+        const invest = groupEntries.filter((e) => e.type === "investment").reduce((s, e) => s + e.amount, 0);
+        return { linkId: id, entries: groupEntries, income, expense, invest, net: income - expense, count: groupEntries.length };
+      }).sort((a, b) => a.linkId.localeCompare(b.linkId, "de"));
+  }, [financeEntries, startKey, endKey]);
 
   const toggleLinkGroup = (id) => setExpandedLinkIds((current) => {
     const next = new Set(current);
@@ -7467,7 +7474,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
           <SectionLabel>Verknüpfte Einträge</SectionLabel>
           <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>
-            Einträge mit derselben Verknüpfungs-ID gehören zusammen (z. B. eine Ausgabe und die passende Einnahme) - hier über alle Zeiträume hinweg gemeinsam ausgewertet, unabhängig vom oben durchblätterten Zeitraum.
+            Einträge mit derselben Verknüpfungs-ID gehören zusammen (z. B. eine Ausgabe und die passende Einnahme) - gezeigt werden nur Verknüpfungen mit mindestens einem Eintrag im oben ausgewählten Zeitraum, dafür dann mit allen zugehörigen Einträgen über alle Zeiträume hinweg.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {linkedGroups.map((group) => (
