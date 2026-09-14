@@ -7056,6 +7056,7 @@ function financeEffectiveEntriesForRange(entries, startKey, endKey) {
 }
 
 function FinancePage({ financeEntries, persistFinanceEntries, financeCategories, onAddFinanceCategory, persons, onConvertLoan, isMobile }) {
+  const [subTab, setSubTab] = useState("entry");
   const [periodMode, setPeriodMode] = useState("month");
   const [periodDate, setPeriodDate] = useState(() => new Date());
   const [type, setType] = useState("expense");
@@ -7124,6 +7125,22 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
     return [...map.entries()].map(([area, sum]) => ({ area, sum })).sort((a, b) => b.sum - a.sum);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveEntries]);
+
+  // Auswertung, wie viele Einträge (über alle Typen hinweg) auf jeden Bereich
+  // entfallen - unabhängig vom Betrag, ergänzt die betragsbasierte Sicht oben.
+  const entriesByArea = useMemo(() => {
+    const map = new Map();
+    effectiveEntries.forEach((e) => {
+      const area = (e.category || "").trim() || FINANCE_NO_AREA;
+      if (!map.has(area)) map.set(area, { area, count: 0, income: 0, expense: 0, investment: 0 });
+      const row = map.get(area);
+      row.count += 1;
+      row[e.type] = (row[e.type] || 0) + 1;
+    });
+    return [...map.values()].sort((a, b) => b.count - a.count);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveEntries]);
+  const maxAreaCount = Math.max(1, ...entriesByArea.map((row) => row.count));
 
   // Mit Marie markierte Einträge zählen unverändert in allen Summen oben mit
   // (Einnahmen/Ausgaben/Netto/Bereiche) - hier nur zusätzlich ihr 50%-Anteil.
@@ -7275,6 +7292,13 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
         <IconButton onClick={() => setPeriodDate((d) => shiftFinancePeriod(d, periodMode, 1))} title="Nächster Zeitraum"><ChevronRight size={16} /></IconButton>
       </div>
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        <ToggleChip active={subTab === "entry"} onClick={() => setSubTab("entry")}>Eingabe</ToggleChip>
+        <ToggleChip active={subTab === "analysis"} onClick={() => setSubTab("analysis")}>Auswertung</ToggleChip>
+      </div>
+
+      {subTab === "entry" && (
+      <>
       {openLoans.length > 0 && (
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
           <SectionLabel>Offene Beträge</SectionLabel>
@@ -7404,6 +7428,56 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
         </div>
       </div>
 
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18 }}>
+        <SectionLabel>Einträge · {label}</SectionLabel>
+        {sortedEntries.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Einträge in diesem Zeitraum.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {sortedEntries.map((entry) => {
+              const meta = FINANCE_TYPE_META[entry.type] || FINANCE_TYPE_META.expense;
+              const months = entry.type === "expense" && entry.fixed ? financeCoverageMonths(entry) : null;
+              return (
+                <div key={entry.id} style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                  padding: "8px 10px", borderRadius: 9, background: COLORS.bgSoft,
+                  outline: editingId === entry.id ? `1px solid ${COLORS.violet}` : "none",
+                }}>
+                  <span style={{ fontSize: 12.5, color: COLORS.textMuted, minWidth: 0 }}>
+                    <strong style={{ color: meta.color }}>{meta.sign}{formatMoney(entry.amount)} €</strong>
+                    {" · "}{meta.label}
+                    {entry.category ? ` · ${entry.category}` : ""}
+                    {entry.type === "expense" ? (entry.fixed
+                      ? (months.length > 1 ? ` · Fix (gilt für ${months.map(financeMonthLabel).join(", ")}, ${formatMoney(entry.amount / months.length)} €/Monat)` : " · Fix")
+                      : " · Variabel") : ""}
+                    {entry.marie ? " · Marie 50%" : ""}
+                    {" · "}{shortDate(entry.date)}
+                    {entry.note ? ` · ${entry.note}` : ""}
+                    {entry.linkId ? <span style={{ color: COLORS.violet }}> · <Link2 size={10} style={{ verticalAlign: "-1px" }} /> {entry.linkId}</span> : null}
+                    {entry.sourceLoanId ? " · aus Vorstreckung" : ""}
+                  </span>
+                  {confirmId === entry.id ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => setConfirmId(null)} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11 }}>Abbrechen</button>
+                      <button onClick={() => { deleteEntry(entry.id); setConfirmId(null); }} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11, color: COLORS.coral, borderColor: COLORS.coral }}>Löschen</button>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <IconButton onClick={() => startEdit(entry)} title="Eintrag bearbeiten"><Pencil size={13} /></IconButton>
+                      <IconButton onClick={() => setConfirmId(entry.id)} title="Eintrag löschen" danger><Trash2 size={13} /></IconButton>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      </>
+      )}
+
+      {subTab === "analysis" && (
+      <>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10, marginBottom: 8 }}>
         <StatCard label="Einnahmen" value={formatMoney(incomeSum)} suffix="€" accent={COLORS.mint} />
         <StatCard label="Ausgaben" value={formatMoney(expenseSum)} suffix="€" accent={COLORS.coral} />
@@ -7448,6 +7522,32 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                 </div>
                 <div style={{ height: 8, background: COLORS.bgSoft, borderRadius: 5, overflow: "hidden" }}>
                   <div style={{ height: "100%", width: `${row.sum / expenseSum * 100}%`, background: categoryColor(row.area), borderRadius: 5 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {entriesByArea.length > 0 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+          <SectionLabel>Einträge pro Bereich</SectionLabel>
+          <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
+            Anzahl der Einträge (über alle Typen hinweg) je Bereich im gewählten Zeitraum.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {entriesByArea.map((row) => (
+              <div key={row.area}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 5, fontSize: 12.5 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
+                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: categoryColor(row.area) }} />{row.area}
+                  </span>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", color: COLORS.textMuted }}>
+                    {row.count} {row.count === 1 ? "Eintrag" : "Einträge"}
+                  </span>
+                </div>
+                <div style={{ height: 8, background: COLORS.bgSoft, borderRadius: 5, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${row.count / maxAreaCount * 100}%`, background: categoryColor(row.area), borderRadius: 5 }} />
                 </div>
               </div>
             ))}
@@ -7542,52 +7642,8 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
           </BarChart>
         </ResponsiveContainer>
       </div>
-
-      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18 }}>
-        <SectionLabel>Einträge · {label}</SectionLabel>
-        {sortedEntries.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Einträge in diesem Zeitraum.</div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {sortedEntries.map((entry) => {
-              const meta = FINANCE_TYPE_META[entry.type] || FINANCE_TYPE_META.expense;
-              const months = entry.type === "expense" && entry.fixed ? financeCoverageMonths(entry) : null;
-              return (
-                <div key={entry.id} style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
-                  padding: "8px 10px", borderRadius: 9, background: COLORS.bgSoft,
-                  outline: editingId === entry.id ? `1px solid ${COLORS.violet}` : "none",
-                }}>
-                  <span style={{ fontSize: 12.5, color: COLORS.textMuted, minWidth: 0 }}>
-                    <strong style={{ color: meta.color }}>{meta.sign}{formatMoney(entry.amount)} €</strong>
-                    {" · "}{meta.label}
-                    {entry.category ? ` · ${entry.category}` : ""}
-                    {entry.type === "expense" ? (entry.fixed
-                      ? (months.length > 1 ? ` · Fix (gilt für ${months.map(financeMonthLabel).join(", ")}, ${formatMoney(entry.amount / months.length)} €/Monat)` : " · Fix")
-                      : " · Variabel") : ""}
-                    {entry.marie ? " · Marie 50%" : ""}
-                    {" · "}{shortDate(entry.date)}
-                    {entry.note ? ` · ${entry.note}` : ""}
-                    {entry.linkId ? <span style={{ color: COLORS.violet }}> · <Link2 size={10} style={{ verticalAlign: "-1px" }} /> {entry.linkId}</span> : null}
-                    {entry.sourceLoanId ? " · aus Vorstreckung" : ""}
-                  </span>
-                  {confirmId === entry.id ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                      <button onClick={() => setConfirmId(null)} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11 }}>Abbrechen</button>
-                      <button onClick={() => { deleteEntry(entry.id); setConfirmId(null); }} style={{ ...ghostBtn, padding: "5px 8px", fontSize: 11, color: COLORS.coral, borderColor: COLORS.coral }}>Löschen</button>
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                      <IconButton onClick={() => startEdit(entry)} title="Eintrag bearbeiten"><Pencil size={13} /></IconButton>
-                      <IconButton onClick={() => setConfirmId(entry.id)} title="Eintrag löschen" danger><Trash2 size={13} /></IconButton>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      </>
+      )}
     </div>
   );
 }
