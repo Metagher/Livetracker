@@ -2563,7 +2563,16 @@ function buildYearWeeklyHeatmap(year, dailyStatusMap) {
    @section PROGRESS-PAGE — "Fortschritt": Recharts-Diagramme + Erfolge-Grid
    PROGRESS PAGE (Diagramme + Erfolge)
    ============================================================ */
-function ProgressPage({ habits, entries, achievements, goals, tasks, persons, allStats, isMobile }) {
+const WEEK_SCORE_METRICS = [
+  { key: "habitRate", label: "Habits" },
+  { key: "mood", label: "Stimmung" },
+  { key: "meetingsPerDay", label: "Treffen" },
+  { key: "donePerDay", label: "Erledigt" },
+];
+const WEEK_SCORE_BASELINE_WEEKS = 8;
+const WEEK_SCORE_TREND_WEEKS = 12;
+
+function ProgressPage({ habits, entries, achievements, goals, tasks, persons, moods, allStats, isMobile }) {
   const active = habits;
   const [rangeDays, setRangeDays] = useState(30);
 
@@ -2619,6 +2628,77 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons, al
     }));
     return map;
   }, [allStats]);
+
+  // Wochen-Score: "ist diese Kalenderwoche eine gute Woche" - unabhängig vom
+  // Zeitraum-Filter oben, immer die tatsächliche aktuelle Kalenderwoche.
+  // Jedes Signal (Habit-Quote, Stimmung, Treffen/Tag, Erledigt/Tag) wird auf
+  // den eigenen Schnitt der letzten 8 Wochen normiert (Verhältnis statt fester
+  // Gewichtung) und dann gemittelt - so verzerrt kein einzelnes Signal den
+  // Gesamteindruck. Zähl-Signale (Treffen, Erledigt) laufen "pro Tag", damit
+  // eine noch unvollständige aktuelle Woche fair mit vollen Wochen verglichen
+  // wird.
+  const weekScoreAnalysis = useMemo(() => {
+    const meetingDates = (persons || []).filter((p) => p.meetingTrackingEnabled !== false).flatMap((p) => p.meetings || []);
+    const doneDates = [
+      ...(tasks || []).filter((t) => t.completed && t.completedAt).map((t) => t.completedAt),
+      ...(goals || []).filter((g) => g.achieved && g.achievedAt).map((g) => g.achievedAt),
+    ];
+    const today = new Date();
+    const currentWeekStart = startOfWeek(today);
+    const daysElapsed = Math.min(7, Math.floor((today - currentWeekStart) / 86400000) + 1);
+    const totalWeeks = WEEK_SCORE_TREND_WEEKS + WEEK_SCORE_BASELINE_WEEKS;
+
+    const weeks = Array.from({ length: totalWeeks }, (_, i) => {
+      const offset = totalWeeks - 1 - i; // 0 = aktuelle Woche, höher = weiter zurück
+      const weekStart = addDays(currentWeekStart, -7 * offset);
+      const isCurrent = offset === 0;
+      const days = isCurrent ? daysElapsed : 7;
+      const dayKeys = Array.from({ length: days }, (_, d) => toKey(addDays(weekStart, d)));
+      let success = 0, fail = 0;
+      dayKeys.forEach((k) => { const s = dailyStatusMap[k]; if (s) { success += s.success; fail += s.fail; } });
+      return {
+        weekStart, isCurrent,
+        habitRate: (success + fail) > 0 ? (success / (success + fail)) * 100 : null,
+        mood: moodAverage(moods, dayKeys),
+        meetingsPerDay: meetingDates.filter((d) => dayKeys.includes(d)).length / days,
+        donePerDay: doneDates.filter((d) => dayKeys.includes(d)).length / days,
+      };
+    });
+
+    const scoreForIndex = (index) => {
+      const week = weeks[index];
+      const baseline = weeks.slice(Math.max(0, index - WEEK_SCORE_BASELINE_WEEKS), index);
+      const metrics = WEEK_SCORE_METRICS.map(({ key, label }) => {
+        const value = week[key];
+        const baselineValues = baseline.map((w) => w[key]).filter((v) => v !== null && v !== undefined && v > 0);
+        if (value === null || value === undefined || baselineValues.length === 0) return { key, label, available: false };
+        const baselineAvg = baselineValues.reduce((a, b) => a + b, 0) / baselineValues.length;
+        if (baselineAvg <= 0) return { key, label, available: false };
+        // Auf 50-200% gekappt, damit ein einzelnes seltenes Ereignis (z. B. ein
+        // Treffen am ersten Tag einer erst halb vergangenen Woche) das Gesamtbild
+        // nicht durch eine extreme Verhältniszahl verzerrt.
+        const ratioPct = Math.round(Math.min(200, Math.max(50, (value / baselineAvg) * 100)));
+        return { key, label, available: true, ratioPct };
+      });
+      const available = metrics.filter((m) => m.available);
+      const score = available.length > 0 ? Math.round(available.reduce((sum, m) => sum + m.ratioPct, 0) / available.length) : null;
+      return { score, metrics, baselineWeeks: baseline.length };
+    };
+
+    const trend = weeks.slice(WEEK_SCORE_BASELINE_WEEKS).map((week, i) => {
+      const { score } = scoreForIndex(i + WEEK_SCORE_BASELINE_WEEKS);
+      return { key: toKey(week.weekStart), label: `KW ${isoWeekNumber(week.weekStart)}`, score };
+    });
+
+    const currentIndex = totalWeeks - 1;
+    const currentResult = scoreForIndex(currentIndex);
+    const label = currentResult.score === null ? null
+      : currentResult.score >= 112 ? "Starke Woche"
+      : currentResult.score <= 88 ? "Schwächere Woche"
+      : "Durchschnittliche Woche";
+
+    return { ...currentResult, label, trend, daysElapsed };
+  }, [dailyStatusMap, moods, persons, tasks, goals]);
 
   const periodAnalysis = useMemo(() => {
     const today = new Date();
@@ -2850,6 +2930,62 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons, al
               background: rangeDays === option.value ? COLORS.ember2 + "14" : "transparent",
             }}>{option.label}</button>
           ))}
+        </div>
+      </div>
+
+      <div style={{
+        background: `linear-gradient(135deg, ${COLORS.violet}14, ${COLORS.mint}0f)`, border: `1px solid ${COLORS.borderSoft}`,
+        borderRadius: 16, padding: 20, marginBottom: 20,
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+          Diese Kalenderwoche · KW {isoWeekNumber(new Date())}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+          <div style={{ minWidth: 0 }}>
+            {weekScoreAnalysis.score === null ? (
+              <div style={{ fontSize: 14, color: COLORS.textMuted, maxWidth: 420 }}>
+                Noch nicht genug Verlauf für einen Vergleich - trag ein paar Wochen weiter (Habits, Stimmung, Treffen oder Tasks/Ziele), dann erscheint hier eine Einschätzung.
+              </div>
+            ) : (
+              <>
+                <div style={{
+                  fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600,
+                  color: weekScoreAnalysis.score >= 112 ? COLORS.mint : weekScoreAnalysis.score <= 88 ? COLORS.coral : COLORS.ember2,
+                }}>
+                  {weekScoreAnalysis.label}
+                </div>
+                <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: 4, marginBottom: 10 }}>
+                  {weekScoreAnalysis.score}% deines {weekScoreAnalysis.baselineWeeks}-Wochen-Schnitts
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {weekScoreAnalysis.metrics.filter((m) => m.available).map((m) => (
+                    <span key={m.key} style={{
+                      display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, padding: "4px 9px", borderRadius: 7,
+                      background: COLORS.bgSoft, color: m.ratioPct >= 105 ? COLORS.mint : m.ratioPct <= 95 ? COLORS.coral : COLORS.textMuted,
+                    }}>
+                      {m.ratioPct >= 105 ? "↑" : m.ratioPct <= 95 ? "↓" : "→"} {m.label}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          {weekScoreAnalysis.trend.filter((w) => w.score !== null).length >= 2 && (
+            <div style={{ flex: "1 1 220px", minWidth: 200, maxWidth: 320 }}>
+              <ResponsiveContainer width="100%" height={64}>
+                <LineChart data={weekScoreAnalysis.trend}>
+                  <YAxis hide domain={["dataMin - 8", "dataMax + 8"]} />
+                  <Tooltip
+                    contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }}
+                    formatter={(value) => [value === null ? "keine Daten" : `${value}%`, "Wochen-Score"]}
+                    labelFormatter={(_, payload) => payload?.[0]?.payload?.label || ""}
+                  />
+                  <Line type="monotone" dataKey="score" stroke={COLORS.violet} strokeWidth={2.5} dot={false} connectNulls />
+                </LineChart>
+              </ResponsiveContainer>
+              <div style={{ fontSize: 10.5, color: COLORS.textFaint, textAlign: "center", marginTop: 2 }}>Verlauf der letzten {WEEK_SCORE_TREND_WEEKS} Wochen</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -8988,7 +9124,7 @@ export default function LifeOS() {
               isMobile={isMobile}
             />
           )}
-          {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} persons={persons} allStats={allStats} isMobile={isMobile} />}
+          {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} persons={persons} moods={moods} allStats={allStats} isMobile={isMobile} />}
           {page === "mood" && <MoodPage moods={moods} persistMoods={persistMoods} currentDateKey={currentDateKey} />}
           {page === "consumables" && <ConsumablesPage consumables={consumables} persistConsumables={persistConsumables} shoppingList={shoppingList} persistShoppingList={persistShoppingList} />}
           {page === "shopping" && <ShoppingListPage shoppingList={shoppingList} persistShoppingList={persistShoppingList} consumables={consumables} persistConsumables={persistConsumables} />}
