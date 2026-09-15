@@ -4655,18 +4655,37 @@ function ConsumablesPage({ consumables, persistConsumables, shoppingList, persis
 }
 
 /* ============================================================
-   @section MOOD-PAGE — tägliches Fitness- und Stimmungsgefühl
+   @section MOOD-PAGE — tägliche mentale Verfassung und Gesundheitszustand
    Wie bei Habits gibt es eine Erfassungs-Streak (Tage in Folge mit Eintrag,
    "heute" bricht sie noch nicht) und eine kleine Konfetti-Belohnung, wenn
-   ein Tag komplett (Fitness + Stimmung) erfasst wird - damit sich das
-   Eintragen genauso lohnend anfühlt wie beim Rest der App.
+   ein Tag komplett (mentale Verfassung + körperliche Energie) erfasst wird -
+   damit sich das Eintragen genauso lohnend anfühlt wie beim Rest der App.
+   Zwei getrennte Bereiche: "Mentale Verfassung" (Stimmung + mentale Energie)
+   und "Gesundheitszustand" (körperliche Energie + Symptome). Der
+   Gesundheitswert wird NICHT manuell eingeschätzt, sondern aus den erfassten
+   Symptomen abgeleitet (keine Symptome = 5/5, jedes Symptom senkt den Wert) -
+   `entry.symptoms` ist dabei `undefined`, solange an dem Tag noch nichts zur
+   Gesundheit erfasst wurde, und ein (ggf. leeres) Array, sobald der Tag
+   bewusst als "erfasst" markiert wurde (auch ohne Symptome).
+   Alte Einträge tragen noch `fitness`/`mood` statt `physicalEnergy`/
+   `mentalState` - beim Lesen wird darauf zurückgefallen, damit bereits
+   erfasste Verläufe nicht verloren gehen.
    ============================================================ */
 const MOOD_SCALE = [
   { value: 1, label: "Sehr niedrig", emoji: "😞" }, { value: 2, label: "Niedrig", emoji: "😕" },
   { value: 3, label: "Mittel", emoji: "😐" }, { value: 4, label: "Gut", emoji: "🙂" }, { value: 5, label: "Sehr gut", emoji: "😄" },
 ];
+const SYMPTOM_OPTIONS = [
+  "Kopfschmerzen", "Halsschmerzen", "Husten", "Schnupfen", "Fieber", "Übelkeit",
+  "Bauchschmerzen", "Rückenschmerzen", "Gelenkschmerzen", "Muskelkater",
+  "Schwindel", "Schlafprobleme", "Erschöpfung", "Allergie",
+];
+function mentalStateOf(entry) { return entry?.mentalState ?? entry?.mood; }
+function physicalEnergyOf(entry) { return entry?.physicalEnergy ?? entry?.fitness; }
 function overallMood(entry) {
-  return entry?.fitness && entry?.mood ? Math.round(((entry.fitness + entry.mood) / 2) * 10) / 10 : null;
+  const mental = mentalStateOf(entry);
+  const physical = physicalEnergyOf(entry);
+  return mental && physical ? Math.round(((mental + physical) / 2) * 10) / 10 : null;
 }
 function moodEmojiFor(value) {
   if (value === null || value === undefined) return "✨";
@@ -4674,13 +4693,26 @@ function moodEmojiFor(value) {
   return (MOOD_SCALE.find((m) => m.value === rounded) || {}).emoji || "✨";
 }
 function moodColorFor(value) {
-  if (value === null) return COLORS.textFaint;
+  if (value === null || value === undefined) return COLORS.textFaint;
   if (value >= 4) return COLORS.mint;
   if (value < 2.5) return COLORS.coral;
   return COLORS.ember2;
 }
-// Tage in Folge mit vollständigem Eintrag (Fitness + Stimmung), analog zur
-// Habit-Streak: "heute" bricht die Streak noch nicht, solange sie offen ist.
+// Gesundheitswert aus den Symptomen des Tages: keine Symptome = 5/5, jedes
+// weitere Symptom senkt den Wert um 1 (Minimum 1). null = an dem Tag wurde
+// noch nichts zur Gesundheit erfasst (auch keine explizite "keine Symptome").
+function healthScore(entry) {
+  if (!entry || !Array.isArray(entry.symptoms)) return null;
+  return Math.max(1, 5 - entry.symptoms.length);
+}
+function healthLabelFor(entry) {
+  if (!entry || !Array.isArray(entry.symptoms)) return "Nicht erfasst";
+  if (entry.symptoms.length === 0) return "Keine Symptome";
+  return `${entry.symptoms.length} Symptom${entry.symptoms.length === 1 ? "" : "e"}`;
+}
+// Tage in Folge mit vollständigem Eintrag (mentale Verfassung + körperliche
+// Energie), analog zur Habit-Streak: "heute" bricht die Streak noch nicht,
+// solange sie offen ist.
 function moodLoggingStreak(moods) {
   let streak = 0;
   let cursor = new Date();
@@ -4696,24 +4728,52 @@ function moodAverage(moods, dateKeys) {
   if (values.length === 0) return null;
   return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
 }
+// Generischer Mittelwert für ein beliebiges Feld (z.B. mentale/körperliche
+// Energie oder Gesundheit) über einen Satz von Tagen hinweg.
+function fieldAverage(moods, dateKeys, getter) {
+  const values = dateKeys.map((k) => getter(moods[k])).filter((v) => v !== null && v !== undefined);
+  if (values.length === 0) return null;
+  return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
+}
 
 function MoodInput({ dateKey, moods, persistMoods, compact = false, onComplete }) {
   const entry = moods[dateKey] || {};
+  const [customSymptom, setCustomSymptom] = useState("");
   const saveValue = (field, value) => {
     const wasComplete = overallMood(entry) !== null;
     const nextEntry = { ...entry, [field]: value };
     persistMoods({ ...moods, [dateKey]: nextEntry });
     if (!wasComplete && overallMood(nextEntry) !== null) onComplete?.();
   };
+  const setSymptoms = (next) => persistMoods({ ...moods, [dateKey]: { ...entry, symptoms: next } });
+  const toggleSymptom = (name) => {
+    const current = entry.symptoms || [];
+    setSymptoms(current.includes(name) ? current.filter((s) => s !== name) : [...current, name]);
+  };
+  const addCustomSymptom = () => {
+    const name = customSymptom.trim();
+    if (!name) return;
+    const current = entry.symptoms || [];
+    if (!current.includes(name)) setSymptoms([...current, name]);
+    setCustomSymptom("");
+  };
+
+  const mentalState = mentalStateOf(entry);
+  const physicalEnergy = physicalEnergyOf(entry);
   const total = overallMood(entry);
   const totalColor = moodColorFor(total);
-  const scale = (field, title, color) => <div style={{ flex: "1 1 260px" }}>
+  const health = healthScore(entry);
+  const healthColor = moodColorFor(health);
+  const extraSymptoms = (entry.symptoms || []).filter((s) => !SYMPTOM_OPTIONS.includes(s));
+  const hasNoSymptoms = Array.isArray(entry.symptoms) && entry.symptoms.length === 0;
+
+  const scale = (value, onSelect, title, color) => <div style={{ flex: "1 1 220px" }}>
     <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>{title}</div>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
       {MOOD_SCALE.map((item) => {
-        const active = entry[field] === item.value;
+        const active = value === item.value;
         return (
-          <button key={item.value} title={item.label} onClick={() => saveValue(field, item.value)} style={{
+          <button key={item.value} title={item.label} onClick={() => onSelect(item.value)} style={{
             padding: compact ? "8px 2px" : "10px 3px", borderRadius: 10, cursor: "pointer", fontSize: compact ? 19 : 22,
             border: `1.5px solid ${active ? color : COLORS.border}`,
             background: active ? color + "22" : COLORS.bgSoft,
@@ -4725,19 +4785,67 @@ function MoodInput({ dateKey, moods, persistMoods, compact = false, onComplete }
       })}
     </div>
   </div>;
+  const symptomChip = (active, color) => ({
+    padding: "6px 11px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+    border: `1.5px solid ${active ? color : COLORS.border}`,
+    background: active ? color + "22" : COLORS.bgSoft,
+    color: active ? color : COLORS.textMuted, fontWeight: active ? 600 : 500,
+  });
+
   return <div>
-    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-      {scale("fitness", "A. Wie fit fühlst du dich?", COLORS.mint)}
-      {scale("mood", "B. Wie ist deine Stimmung?", COLORS.violet)}
+    <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.violet, textTransform: "uppercase", letterSpacing: .4, marginBottom: 8 }}>Mentale Verfassung</div>
+    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+      {scale(mentalState, (v) => saveValue("mentalState", v), "Wie ist deine Stimmung?", COLORS.violet)}
+      {scale(entry.mentalEnergy, (v) => saveValue("mentalEnergy", v), "Wie viel mentale Energie hast du?", COLORS.ember1)}
     </div>
-    <div style={{
-      marginTop: 12, padding: "10px 14px", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center",
-      background: total === null ? COLORS.bgSoft : totalColor + "14", border: `1px solid ${total === null ? COLORS.borderSoft : totalColor + "44"}`,
-    }}>
-      <span style={{ fontSize: 12, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ fontSize: 16 }}>{moodEmojiFor(total)}</span> Gesamtstimmung
-      </span>
-      <strong style={{ fontFamily: "Fraunces, serif", fontSize: 20, color: totalColor }}>{total === null ? "–" : `${total} / 5`}</strong>
+
+    <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.mint, textTransform: "uppercase", letterSpacing: .4, marginBottom: 8 }}>Gesundheitszustand</div>
+    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: compact ? 12 : 16 }}>
+      {scale(physicalEnergy, (v) => saveValue("physicalEnergy", v), "Wie viel körperliche Energie hast du?", COLORS.mint)}
+    </div>
+
+    {!compact && (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Symptome (falls vorhanden)</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          <button onClick={() => setSymptoms([])} style={symptomChip(hasNoSymptoms, COLORS.mint)}>✓ Keine Symptome</button>
+          {SYMPTOM_OPTIONS.map((s) => (
+            <button key={s} onClick={() => toggleSymptom(s)} style={symptomChip((entry.symptoms || []).includes(s), COLORS.coral)}>{s}</button>
+          ))}
+          {extraSymptoms.map((s) => (
+            <button key={s} onClick={() => toggleSymptom(s)} style={symptomChip(true, COLORS.coral)}>{s}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <input
+            value={customSymptom} onChange={(e) => setCustomSymptom(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustomSymptom(); } }}
+            placeholder="Eigenes Symptom hinzufügen..." style={{ ...inputStyle, flex: 1, marginBottom: 0, fontSize: 12.5 }}
+          />
+          <button onClick={addCustomSymptom} style={{ ...ghostBtn, flexShrink: 0 }}>Hinzufügen</button>
+        </div>
+      </div>
+    )}
+
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <div style={{
+        flex: "1 1 200px", padding: "10px 14px", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center",
+        background: total === null ? COLORS.bgSoft : totalColor + "14", border: `1px solid ${total === null ? COLORS.borderSoft : totalColor + "44"}`,
+      }}>
+        <span style={{ fontSize: 12, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 16 }}>{moodEmojiFor(total)}</span> Gesamt
+        </span>
+        <strong style={{ fontFamily: "Fraunces, serif", fontSize: 20, color: totalColor }}>{total === null ? "–" : `${total} / 5`}</strong>
+      </div>
+      {!compact && (
+        <div style={{
+          flex: "1 1 200px", padding: "10px 14px", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center",
+          background: health === null ? COLORS.bgSoft : healthColor + "14", border: `1px solid ${health === null ? COLORS.borderSoft : healthColor + "44"}`,
+        }}>
+          <span style={{ fontSize: 12, color: COLORS.textMuted }}>{healthLabelFor(entry)}</span>
+          <strong style={{ fontFamily: "Fraunces, serif", fontSize: 20, color: healthColor }}>{health === null ? "–" : `${health} / 5`}</strong>
+        </div>
+      )}
     </div>
   </div>;
 }
@@ -4745,34 +4853,59 @@ function MoodInput({ dateKey, moods, persistMoods, compact = false, onComplete }
 function MoodPage({ moods, persistMoods, currentDateKey }) {
   const [selectedDate, setSelectedDate] = useState(todayKey());
   const [celebrate, setCelebrate] = useState(false);
-  const series = useMemo(() => Object.keys(moods).sort().slice(-60).map((date) => ({ date: shortDate(date), fitness: moods[date].fitness || null, mood: moods[date].mood || null, overall: overallMood(moods[date]) })), [moods]);
+  const series = useMemo(() => Object.keys(moods).sort().slice(-60).map((date) => {
+    const entry = moods[date];
+    return {
+      date: shortDate(date),
+      mentalState: mentalStateOf(entry) || null,
+      mentalEnergy: entry.mentalEnergy || null,
+      physicalEnergy: physicalEnergyOf(entry) || null,
+      health: healthScore(entry),
+      overall: overallMood(entry),
+    };
+  }), [moods]);
 
   const streak = useMemo(() => moodLoggingStreak(moods), [moods]);
   const weekKeys = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(startOfWeek(keyToDate(currentDateKey)), i))), [currentDateKey]);
   const lastWeekKeys = useMemo(() => weekKeys.map((k) => toKey(addDays(keyToDate(k), -7))), [weekKeys]);
   const weekAvg = moodAverage(moods, weekKeys);
   const lastWeekAvg = moodAverage(moods, lastWeekKeys);
-  const monthAvg = useMemo(() => {
+  const monthKeys = useMemo(() => {
     const prefix = currentDateKey.slice(0, 7);
-    return moodAverage(moods, Object.keys(moods).filter((k) => k.startsWith(prefix)));
+    return Object.keys(moods).filter((k) => k.startsWith(prefix));
   }, [moods, currentDateKey]);
+  const monthAvg = useMemo(() => moodAverage(moods, monthKeys), [moods, monthKeys]);
+  const mentalEnergyMonthAvg = useMemo(() => fieldAverage(moods, monthKeys, (e) => e?.mentalEnergy), [moods, monthKeys]);
+  const physicalEnergyMonthAvg = useMemo(() => fieldAverage(moods, monthKeys, physicalEnergyOf), [moods, monthKeys]);
+  const healthMonthAvg = useMemo(() => fieldAverage(moods, monthKeys, healthScore), [moods, monthKeys]);
   const bestDay = useMemo(() => {
-    const prefix = currentDateKey.slice(0, 7);
-    const entries = Object.keys(moods).filter((k) => k.startsWith(prefix)).map((k) => ({ date: k, value: overallMood(moods[k]) })).filter((e) => e.value !== null);
+    const entries = monthKeys.map((k) => ({ date: k, value: overallMood(moods[k]) })).filter((e) => e.value !== null);
     return entries.length ? entries.reduce((best, e) => (e.value > best.value ? e : best)) : null;
-  }, [moods, currentDateKey]);
+  }, [moods, monthKeys]);
+  const symptomDaysThisWeek = useMemo(() => weekKeys.filter((k) => (moods[k]?.symptoms || []).length > 0).length, [moods, weekKeys]);
+  // Häufigste Symptome der letzten 30 Tage, um Muster erkennen zu können.
+  const topSymptoms = useMemo(() => {
+    const since = toKey(addDays(new Date(), -30));
+    const counts = new Map();
+    Object.keys(moods).filter((k) => k >= since).forEach((k) => {
+      (moods[k].symptoms || []).forEach((s) => counts.set(s, (counts.get(s) || 0) + 1));
+    });
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  }, [moods]);
 
-  const todayOverall = overallMood(moods[currentDateKey]);
+  const todayEntry = moods[currentDateKey] || {};
+  const todayOverall = overallMood(todayEntry);
   const heroEmoji = moodEmojiFor(todayOverall);
   const heroLine = todayOverall !== null
     ? `Heute fühlst du dich bei ${todayOverall} / 5 - ${todayOverall >= 4 ? "richtig gut, schön zu sehen!" : todayOverall < 2.5 ? "sei heute besonders gut zu dir." : "so lala, das ist völlig okay."}`
     : weekAvg !== null && lastWeekAvg !== null && weekAvg !== lastWeekAvg
       ? (weekAvg > lastWeekAvg ? "Aufwärtstrend gegenüber letzter Woche 📈 - trag auch heute ein." : "Etwas gedrückter als letzte Woche - trag ein, wie es dir heute geht.")
       : "Noch nichts für heute erfasst - wie fühlst du dich gerade?";
+  const todaySymptomCount = (todayEntry.symptoms || []).length;
 
   return <div>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-      <div><h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Stimmung</h1><div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Körperliches Gefühl und Stimmung getrennt erfassen.</div></div>
+      <div><h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Stimmung</h1><div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Mentale Verfassung und Gesundheitszustand getrennt erfassen.</div></div>
       <input type="date" max={todayKey()} value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} style={{ ...inputStyle, width: "auto", marginBottom: 0 }} />
     </div>
 
@@ -4784,6 +4917,11 @@ function MoodPage({ moods, persistMoods, currentDateKey }) {
       <div style={{ fontSize: 38, lineHeight: 1, flexShrink: 0 }}>{heroEmoji}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{heroLine}</div>
+        {todaySymptomCount > 0 && (
+          <div style={{ fontSize: 12, color: COLORS.coral, marginTop: 4 }}>
+            {todaySymptomCount} Symptom{todaySymptomCount === 1 ? "" : "e"} heute erfasst.
+          </div>
+        )}
         {streak > 0 && (
           <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
             <Flame size={12} style={{ color: COLORS.ember1 }} /> {streak} {streak === 1 ? "Tag" : "Tage"} in Folge erfasst
@@ -4797,6 +4935,10 @@ function MoodPage({ moods, persistMoods, currentDateKey }) {
       <StatCard label="Ø diese Woche" value={weekAvg ?? "–"} suffix={weekAvg === null ? "" : "/ 5"} accent={moodColorFor(weekAvg)} />
       <StatCard label="Ø diesen Monat" value={monthAvg ?? "–"} suffix={monthAvg === null ? "" : "/ 5"} accent={moodColorFor(monthAvg)} />
       <StatCard label="Bester Tag (Monat)" value={bestDay ? bestDay.value : "–"} suffix={bestDay ? `· ${shortDate(bestDay.date)}` : ""} accent={COLORS.mint} />
+      <StatCard label="Ø mentale Energie" value={mentalEnergyMonthAvg ?? "–"} suffix={mentalEnergyMonthAvg === null ? "" : "/ 5"} accent={COLORS.ember1} />
+      <StatCard label="Ø körperliche Energie" value={physicalEnergyMonthAvg ?? "–"} suffix={physicalEnergyMonthAvg === null ? "" : "/ 5"} accent={COLORS.mint} />
+      <StatCard label="Ø Gesundheit" value={healthMonthAvg ?? "–"} suffix={healthMonthAvg === null ? "" : "/ 5"} accent={moodColorFor(healthMonthAvg)} />
+      <StatCard label="Symptome (Woche)" value={symptomDaysThisWeek} suffix={`/ 7 Tage`} accent={symptomDaysThisWeek > 0 ? COLORS.coral : COLORS.mint} />
     </div>
 
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
@@ -4806,9 +4948,33 @@ function MoodPage({ moods, persistMoods, currentDateKey }) {
         onComplete={selectedDate === todayKey() ? () => { setCelebrate(true); setTimeout(() => setCelebrate(false), 1200); } : undefined}
       />
     </div>
+
+    {topSymptoms.length > 0 && (
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+        <SectionLabel>Häufigste Symptome (30 Tage)</SectionLabel>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+          {topSymptoms.map(([name, count]) => (
+            <span key={name} style={{
+              padding: "6px 11px", borderRadius: 999, fontSize: 12, fontWeight: 500,
+              border: `1.5px solid ${COLORS.coral}44`, background: COLORS.coral + "14", color: COLORS.coral,
+            }}>{name} · {count}×</span>
+          ))}
+        </div>
+      </div>
+    )}
+
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18 }}>
-      <SectionLabel>Stimmungsverlauf</SectionLabel>
-      {series.length === 0 ? <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Stimmung eingetragen.</div> : <ResponsiveContainer width="100%" height={240}><LineChart data={series}><CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} /><XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} minTickGap={24} /><YAxis domain={[1, 5]} ticks={[1,2,3,4,5]} tick={{ fill: COLORS.textFaint, fontSize: 10 }} /><Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8 }} /><Line type="monotone" dataKey="fitness" name="Fitness" stroke={COLORS.mint} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="mood" name="Stimmung" stroke={COLORS.violet} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="overall" name="Gesamt" stroke={COLORS.ember2} strokeWidth={3} dot={{ r: 3, fill: COLORS.ember2 }} connectNulls /></LineChart></ResponsiveContainer>}
+      <SectionLabel>Verlauf</SectionLabel>
+      {series.length === 0 ? <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Stimmung eingetragen.</div> : <>
+        <ResponsiveContainer width="100%" height={240}><LineChart data={series}><CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} /><XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} minTickGap={24} /><YAxis domain={[1, 5]} ticks={[1,2,3,4,5]} tick={{ fill: COLORS.textFaint, fontSize: 10 }} /><Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8 }} /><Line type="monotone" dataKey="mentalState" name="Mentale Verfassung" stroke={COLORS.violet} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="mentalEnergy" name="Mentale Energie" stroke={COLORS.ember1} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="physicalEnergy" name="Körperliche Energie" stroke={COLORS.mint} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="health" name="Gesundheit" stroke={COLORS.coral} strokeWidth={2} strokeDasharray="4 3" connectNulls /><Line type="monotone" dataKey="overall" name="Gesamt" stroke={COLORS.ember2} strokeWidth={3} dot={{ r: 3, fill: COLORS.ember2 }} connectNulls /></LineChart></ResponsiveContainer>
+        <div style={{ display: "flex", gap: 14, marginTop: 10, fontSize: 11, color: COLORS.textFaint, flexWrap: "wrap" }}>
+          <LegendDot color={COLORS.violet} label="Mentale Verfassung" />
+          <LegendDot color={COLORS.ember1} label="Mentale Energie" />
+          <LegendDot color={COLORS.mint} label="Körperliche Energie" />
+          <LegendDot color={COLORS.coral} label="Gesundheit (Symptome)" />
+          <LegendDot color={COLORS.ember2} label="Gesamt" />
+        </div>
+      </>}
     </div>
   </div>;
 }
@@ -7839,7 +8005,9 @@ function SettingsPage({
     })).filter((row) => row.Text || row["Coach-Feedback"]);
 
     const moodSheet = Object.keys(moods || {}).sort().map((k) => ({
-      Datum: k, Fitness: moods[k].fitness || "", Stimmung: moods[k].mood || "", Gesamt: overallMood(moods[k]) ?? "",
+      Datum: k, "Mentale Verfassung": mentalStateOf(moods[k]) || "", "Mentale Energie": moods[k].mentalEnergy || "",
+      "Körperliche Energie": physicalEnergyOf(moods[k]) || "", Gesamt: overallMood(moods[k]) ?? "",
+      Symptome: (moods[k].symptoms || []).join(", "), Gesundheit: healthScore(moods[k]) ?? "",
     }));
 
     const achievementsSheet = (achievements || []).map((a) => ({
