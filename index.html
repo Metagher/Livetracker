@@ -4661,9 +4661,9 @@ function ConsumablesPage({ consumables, persistConsumables, shoppingList, persis
    ein Tag komplett (mentale Verfassung + körperliche Energie) erfasst wird -
    damit sich das Eintragen genauso lohnend anfühlt wie beim Rest der App.
    Zwei getrennte Bereiche: "Mentale Verfassung" (Stimmung + mentale Energie)
-   und "Gesundheitszustand" (körperliche Energie + Symptome). Der
-   Gesundheitswert wird NICHT manuell eingeschätzt, sondern aus den erfassten
-   Symptomen abgeleitet (keine Symptome = 5/5, jedes Symptom senkt den Wert) -
+   und "Gesundheitszustand" (körperliche Energie + Symptome). Symptome werden
+   NICHT in Punkte/einen Score umgerechnet, sondern schlicht danach
+   ausgewertet, an wie vielen Tagen sie auftreten (z. B. "Symptome (Woche)").
    `entry.symptoms` ist dabei `undefined`, solange an dem Tag noch nichts zur
    Gesundheit erfasst wurde, und ein (ggf. leeres) Array, sobald der Tag
    bewusst als "erfasst" markiert wurde (auch ohne Symptome).
@@ -4698,17 +4698,24 @@ function moodColorFor(value) {
   if (value < 2.5) return COLORS.coral;
   return COLORS.ember2;
 }
-// Gesundheitswert aus den Symptomen des Tages: keine Symptome = 5/5, jedes
-// weitere Symptom senkt den Wert um 1 (Minimum 1). null = an dem Tag wurde
+// Anzahl der Symptome des Tages (kein Punktwert). null = an dem Tag wurde
 // noch nichts zur Gesundheit erfasst (auch keine explizite "keine Symptome").
-function healthScore(entry) {
+function symptomCountOf(entry) {
   if (!entry || !Array.isArray(entry.symptoms)) return null;
-  return Math.max(1, 5 - entry.symptoms.length);
+  return entry.symptoms.length;
 }
-function healthLabelFor(entry) {
+function symptomLabelFor(entry) {
   if (!entry || !Array.isArray(entry.symptoms)) return "Nicht erfasst";
   if (entry.symptoms.length === 0) return "Keine Symptome";
   return `${entry.symptoms.length} Symptom${entry.symptoms.length === 1 ? "" : "e"}`;
+}
+// Farbe rein nach Symptomanzahl (weniger ist besser) - unabhängig von der
+// Punkte-/Stimmungsskala.
+function symptomColorFor(count) {
+  if (count === null || count === undefined) return COLORS.textFaint;
+  if (count === 0) return COLORS.mint;
+  if (count <= 2) return COLORS.ember2;
+  return COLORS.coral;
 }
 // Tage in Folge mit vollständigem Eintrag (mentale Verfassung + körperliche
 // Energie), analog zur Habit-Streak: "heute" bricht die Streak noch nicht,
@@ -4762,8 +4769,8 @@ function MoodInput({ dateKey, moods, persistMoods, compact = false, onComplete }
   const physicalEnergy = physicalEnergyOf(entry);
   const total = overallMood(entry);
   const totalColor = moodColorFor(total);
-  const health = healthScore(entry);
-  const healthColor = moodColorFor(health);
+  const symptomCount = symptomCountOf(entry);
+  const symptomColor = symptomColorFor(symptomCount);
   const extraSymptoms = (entry.symptoms || []).filter((s) => !SYMPTOM_OPTIONS.includes(s));
   const hasNoSymptoms = Array.isArray(entry.symptoms) && entry.symptoms.length === 0;
 
@@ -4840,10 +4847,10 @@ function MoodInput({ dateKey, moods, persistMoods, compact = false, onComplete }
       {!compact && (
         <div style={{
           flex: "1 1 200px", padding: "10px 14px", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center",
-          background: health === null ? COLORS.bgSoft : healthColor + "14", border: `1px solid ${health === null ? COLORS.borderSoft : healthColor + "44"}`,
+          background: symptomCount === null ? COLORS.bgSoft : symptomColor + "14", border: `1px solid ${symptomCount === null ? COLORS.borderSoft : symptomColor + "44"}`,
         }}>
-          <span style={{ fontSize: 12, color: COLORS.textMuted }}>{healthLabelFor(entry)}</span>
-          <strong style={{ fontFamily: "Fraunces, serif", fontSize: 20, color: healthColor }}>{health === null ? "–" : `${health} / 5`}</strong>
+          <span style={{ fontSize: 12, color: COLORS.textMuted }}>{symptomLabelFor(entry)}</span>
+          <strong style={{ fontFamily: "Fraunces, serif", fontSize: 20, color: symptomColor }}>{symptomCount === null ? "–" : symptomCount}</strong>
         </div>
       )}
     </div>
@@ -4860,7 +4867,6 @@ function MoodPage({ moods, persistMoods, currentDateKey }) {
       mentalState: mentalStateOf(entry) || null,
       mentalEnergy: entry.mentalEnergy || null,
       physicalEnergy: physicalEnergyOf(entry) || null,
-      health: healthScore(entry),
       overall: overallMood(entry),
     };
   }), [moods]);
@@ -4877,12 +4883,12 @@ function MoodPage({ moods, persistMoods, currentDateKey }) {
   const monthAvg = useMemo(() => moodAverage(moods, monthKeys), [moods, monthKeys]);
   const mentalEnergyMonthAvg = useMemo(() => fieldAverage(moods, monthKeys, (e) => e?.mentalEnergy), [moods, monthKeys]);
   const physicalEnergyMonthAvg = useMemo(() => fieldAverage(moods, monthKeys, physicalEnergyOf), [moods, monthKeys]);
-  const healthMonthAvg = useMemo(() => fieldAverage(moods, monthKeys, healthScore), [moods, monthKeys]);
   const bestDay = useMemo(() => {
     const entries = monthKeys.map((k) => ({ date: k, value: overallMood(moods[k]) })).filter((e) => e.value !== null);
     return entries.length ? entries.reduce((best, e) => (e.value > best.value ? e : best)) : null;
   }, [moods, monthKeys]);
   const symptomDaysThisWeek = useMemo(() => weekKeys.filter((k) => (moods[k]?.symptoms || []).length > 0).length, [moods, weekKeys]);
+  const symptomDaysThisMonth = useMemo(() => monthKeys.filter((k) => (moods[k]?.symptoms || []).length > 0).length, [moods, monthKeys]);
   // Häufigste Symptome der letzten 30 Tage, um Muster erkennen zu können.
   const topSymptoms = useMemo(() => {
     const since = toKey(addDays(new Date(), -30));
@@ -4937,8 +4943,8 @@ function MoodPage({ moods, persistMoods, currentDateKey }) {
       <StatCard label="Bester Tag (Monat)" value={bestDay ? bestDay.value : "–"} suffix={bestDay ? `· ${shortDate(bestDay.date)}` : ""} accent={COLORS.mint} />
       <StatCard label="Ø mentale Energie" value={mentalEnergyMonthAvg ?? "–"} suffix={mentalEnergyMonthAvg === null ? "" : "/ 5"} accent={COLORS.ember1} />
       <StatCard label="Ø körperliche Energie" value={physicalEnergyMonthAvg ?? "–"} suffix={physicalEnergyMonthAvg === null ? "" : "/ 5"} accent={COLORS.mint} />
-      <StatCard label="Ø Gesundheit" value={healthMonthAvg ?? "–"} suffix={healthMonthAvg === null ? "" : "/ 5"} accent={moodColorFor(healthMonthAvg)} />
       <StatCard label="Symptome (Woche)" value={symptomDaysThisWeek} suffix={`/ 7 Tage`} accent={symptomDaysThisWeek > 0 ? COLORS.coral : COLORS.mint} />
+      <StatCard label="Symptome (Monat)" value={symptomDaysThisMonth} suffix={`/ ${monthKeys.length || 0} Tage`} accent={symptomDaysThisMonth > 0 ? COLORS.coral : COLORS.mint} />
     </div>
 
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
@@ -4966,12 +4972,11 @@ function MoodPage({ moods, persistMoods, currentDateKey }) {
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18 }}>
       <SectionLabel>Verlauf</SectionLabel>
       {series.length === 0 ? <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Stimmung eingetragen.</div> : <>
-        <ResponsiveContainer width="100%" height={240}><LineChart data={series}><CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} /><XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} minTickGap={24} /><YAxis domain={[1, 5]} ticks={[1,2,3,4,5]} tick={{ fill: COLORS.textFaint, fontSize: 10 }} /><Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8 }} /><Line type="monotone" dataKey="mentalState" name="Mentale Verfassung" stroke={COLORS.violet} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="mentalEnergy" name="Mentale Energie" stroke={COLORS.ember1} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="physicalEnergy" name="Körperliche Energie" stroke={COLORS.mint} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="health" name="Gesundheit" stroke={COLORS.coral} strokeWidth={2} strokeDasharray="4 3" connectNulls /><Line type="monotone" dataKey="overall" name="Gesamt" stroke={COLORS.ember2} strokeWidth={3} dot={{ r: 3, fill: COLORS.ember2 }} connectNulls /></LineChart></ResponsiveContainer>
+        <ResponsiveContainer width="100%" height={240}><LineChart data={series}><CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} /><XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10 }} minTickGap={24} /><YAxis domain={[1, 5]} ticks={[1,2,3,4,5]} tick={{ fill: COLORS.textFaint, fontSize: 10 }} /><Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8 }} /><Line type="monotone" dataKey="mentalState" name="Mentale Verfassung" stroke={COLORS.violet} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="mentalEnergy" name="Mentale Energie" stroke={COLORS.ember1} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="physicalEnergy" name="Körperliche Energie" stroke={COLORS.mint} strokeWidth={2} connectNulls /><Line type="monotone" dataKey="overall" name="Gesamt" stroke={COLORS.ember2} strokeWidth={3} dot={{ r: 3, fill: COLORS.ember2 }} connectNulls /></LineChart></ResponsiveContainer>
         <div style={{ display: "flex", gap: 14, marginTop: 10, fontSize: 11, color: COLORS.textFaint, flexWrap: "wrap" }}>
           <LegendDot color={COLORS.violet} label="Mentale Verfassung" />
           <LegendDot color={COLORS.ember1} label="Mentale Energie" />
           <LegendDot color={COLORS.mint} label="Körperliche Energie" />
-          <LegendDot color={COLORS.coral} label="Gesundheit (Symptome)" />
           <LegendDot color={COLORS.ember2} label="Gesamt" />
         </div>
       </>}
@@ -8007,7 +8012,7 @@ function SettingsPage({
     const moodSheet = Object.keys(moods || {}).sort().map((k) => ({
       Datum: k, "Mentale Verfassung": mentalStateOf(moods[k]) || "", "Mentale Energie": moods[k].mentalEnergy || "",
       "Körperliche Energie": physicalEnergyOf(moods[k]) || "", Gesamt: overallMood(moods[k]) ?? "",
-      Symptome: (moods[k].symptoms || []).join(", "), Gesundheit: healthScore(moods[k]) ?? "",
+      Symptome: (moods[k].symptoms || []).join(", "), "Anzahl Symptome": symptomCountOf(moods[k]) ?? "",
     }));
 
     const achievementsSheet = (achievements || []).map((a) => ({
