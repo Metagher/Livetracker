@@ -7121,18 +7121,28 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
   // Enthält je Bereich auch die zugehörigen (auf Monate umgelegten) Einträge,
   // damit sie sich in der Auswertung aufklappen lassen - fürs Bearbeiten wird
   // daraus per id wieder der ursprüngliche Eintrag aus financeEntries geholt.
+  // Einnahmen im selben Bereich werden gegengerechnet, sodass pro Bereich ein
+  // Saldo (Ausgaben minus Einnahmen) entsteht statt nur der reinen Ausgabensumme.
   const byArea = useMemo(() => {
     const map = new Map();
-    expenseEntries.forEach((e) => {
+    effectiveEntries.forEach((e) => {
+      if (e.type !== "expense" && e.type !== "income") return;
       const area = (e.category || "").trim() || FINANCE_NO_AREA;
-      if (!map.has(area)) map.set(area, { area, sum: 0, entries: [] });
+      if (!map.has(area)) map.set(area, { area, expenseSum: 0, incomeSum: 0, entries: [] });
       const row = map.get(area);
-      row.sum += e.amount;
+      if (e.type === "expense") row.expenseSum += e.amount; else row.incomeSum += e.amount;
       row.entries.push(e);
     });
-    return [...map.values()].sort((a, b) => b.sum - a.sum);
+    return [...map.values()]
+      .map((row) => ({ ...row, saldo: row.expenseSum - row.incomeSum }))
+      .sort((a, b) => b.saldo - a.saldo);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveEntries]);
+
+  const totalAreaSaldo = useMemo(
+    () => byArea.reduce((sum, row) => sum + Math.max(row.saldo, 0), 0),
+    [byArea]
+  );
 
   const toggleAreaGroup = (area) => setExpandedAreas((current) => {
     const next = new Set(current);
@@ -7518,10 +7528,12 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
           <SectionLabel>Ausgaben nach Bereich</SectionLabel>
           <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 12 }}>
-            Bereich anklicken, um die einzelnen Einträge einzublenden und zu bearbeiten.
+            Bereich anklicken, um die einzelnen Einträge einzublenden und zu bearbeiten. Einnahmen im selben Bereich werden gegengerechnet - gezeigt wird der Saldo.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {byArea.map((row) => (
+            {byArea.map((row) => {
+              const barPct = totalAreaSaldo > 0 ? Math.max(row.saldo, 0) / totalAreaSaldo * 100 : 0;
+              return (
               <div key={row.area} style={{ border: `1px solid ${COLORS.borderSoft}`, borderRadius: 12, overflow: "hidden" }}>
                 <button
                   type="button"
@@ -7537,11 +7549,17 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                       <span style={{ color: COLORS.textFaint, fontWeight: 400 }}>({row.entries.length})</span>
                     </span>
                     <span style={{ fontFamily: "JetBrains Mono, monospace", color: COLORS.textMuted }}>
-                      {formatMoney(row.sum)} € · {Math.round(row.sum / expenseSum * 100)}%
+                      {formatMoney(row.saldo)} € · {Math.round(barPct)}%
                     </span>
                   </div>
+                  {row.incomeSum > 0 && (
+                    <div style={{ display: "flex", gap: 8, fontSize: 11, color: COLORS.textFaint, marginBottom: 5, fontFamily: "JetBrains Mono, monospace" }}>
+                      <span>Ausgaben {formatMoney(row.expenseSum)} €</span>
+                      <span style={{ color: COLORS.mint }}>Einnahmen -{formatMoney(row.incomeSum)} €</span>
+                    </div>
+                  )}
                   <div style={{ height: 8, background: COLORS.surface, borderRadius: 5, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${row.sum / expenseSum * 100}%`, background: categoryColor(row.area), borderRadius: 5 }} />
+                    <div style={{ height: "100%", width: `${barPct}%`, background: categoryColor(row.area), borderRadius: 5 }} />
                   </div>
                 </button>
                 {expandedAreas.has(row.area) && (
@@ -7552,8 +7570,10 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                         padding: "8px 10px", borderRadius: 9, background: COLORS.bgSoft,
                       }}>
                         <span style={{ fontSize: 12, color: COLORS.textMuted, minWidth: 0 }}>
-                          <strong style={{ color: COLORS.coral }}>-{formatMoney(e.amount)} €</strong>
-                          {e.fixed ? " · Fix" : " · Variabel"}
+                          <strong style={{ color: e.type === "income" ? COLORS.mint : COLORS.coral }}>
+                            {e.type === "income" ? "+" : "-"}{formatMoney(e.amount)} €
+                          </strong>
+                          {e.type === "expense" ? (e.fixed ? " · Fix" : " · Variabel") : " · Einnahme"}
                           {" · "}{shortDate(e.date)}
                           {e.note ? ` · ${e.note}` : ""}
                         </span>
@@ -7573,7 +7593,8 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
