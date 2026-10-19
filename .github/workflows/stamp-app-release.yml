@@ -1,0 +1,74 @@
+name: Stamp App Release
+
+# Hält die "App-Release"-Anzeige (Version/Datum, Seitenleiste) automatisch
+# aktuell. Vorher wurde APP_RELEASE in index.html manuell gepflegt und blieb
+# über viele Merges hinweg stehen, wodurch die Anzeige nicht mehr dem
+# tatsächlich veröffentlichten Stand entsprach.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+
+permissions:
+  contents: write
+
+jobs:
+  stamp:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Bump APP_RELEASE stamp
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+          const file = "index.html";
+          let html = fs.readFileSync(file, "utf8");
+
+          const pad = (n) => String(n).padStart(2, "0");
+          const now = new Date();
+          const y = now.getUTCFullYear();
+          const m = pad(now.getUTCMonth() + 1);
+          const d = pad(now.getUTCDate());
+          const isoPrefix = `${y}.${m}.${d}`;
+          const deDate = `${d}.${m}.${y}`;
+
+          const re = /const APP_RELEASE = \{\s*version:\s*"([^"]+)",\s*date:\s*"([^"]+)",\s*\};/;
+          const match = html.match(re);
+          if (!match) {
+            console.error("APP_RELEASE block not found in " + file);
+            process.exit(1);
+          }
+
+          const currentVersion = match[1];
+          const seq = currentVersion.startsWith(isoPrefix + "-")
+            ? Number(currentVersion.slice(isoPrefix.length + 1)) + 1
+            : 1;
+          const newVersion = `${isoPrefix}-${seq}`;
+
+          if (newVersion === currentVersion) {
+            console.log("Release stamp already up to date:", currentVersion);
+            process.exit(0);
+          }
+
+          const replacement = `const APP_RELEASE = {\n  version: "${newVersion}",\n  date: "${deDate}",\n};`;
+          html = html.replace(re, replacement);
+          fs.writeFileSync(file, html);
+          console.log("Stamped app release:", newVersion, deDate);
+          EOF
+
+      - name: Commit stamp
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- index.html; then
+            echo "No release stamp change, nothing to commit."
+            exit 0
+          fi
+          git add index.html
+          git commit -m "chore: bump app-release stamp"
+          git push
