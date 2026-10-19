@@ -87,7 +87,8 @@ import {
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
   CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
-  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder, Wallet, PiggyBank, Link2
+  Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder, Wallet, PiggyBank, Link2,
+  ChevronUp, ChevronDown, Wrench
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, Cell, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -687,6 +688,7 @@ function useLifeOSData() {
   const [noteFolders, setNoteFolders] = useState([]);
   const [financeEntries, setFinanceEntries] = useState([]);
   const [financeCategories, setFinanceCategories] = useState([]);
+  const [dashboardWidgets, setDashboardWidgets] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -705,7 +707,7 @@ function useLifeOSData() {
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const keys = ["los-habits", "los-entries", "los-achievements", "los-coach", "los-journal", "los-weekly-reports", "los-goals", "los-tasks", "los-persons", "los-categories", "los-person-groups", "los-moods", "los-consumables", "los-shopping-list", "los-notes", "los-note-folders", "los-finance-entries", "los-finance-categories"];
+      const keys = ["los-habits", "los-entries", "los-achievements", "los-coach", "los-journal", "los-weekly-reports", "los-goals", "los-tasks", "los-persons", "los-categories", "los-person-groups", "los-moods", "los-consumables", "los-shopping-list", "los-notes", "los-note-folders", "los-finance-entries", "los-finance-categories", "los-dashboard-widgets"];
       const stored = await window.storage.getMany(keys);
       setHabits(readStoredJSON(stored, "los-habits", []));
       setEntries(readStoredJSON(stored, "los-entries", {}));
@@ -725,6 +727,7 @@ function useLifeOSData() {
       setNoteFolders(readStoredJSON(stored, "los-note-folders", []));
       setFinanceEntries(readStoredJSON(stored, "los-finance-entries", []));
       setFinanceCategories(readStoredJSON(stored, "los-finance-categories", []));
+      setDashboardWidgets(readStoredJSON(stored, "los-dashboard-widgets", null));
       setError(null);
     } catch (err) {
       setError("Deine Daten konnten nicht geladen werden.");
@@ -813,10 +816,14 @@ function useLifeOSData() {
     setFinanceCategories(next);
     await enqueueWrite("los-finance-categories", next);
   }, [enqueueWrite]);
+  const persistDashboardWidgets = useCallback(async (next) => {
+    setDashboardWidgets(next);
+    await enqueueWrite("los-dashboard-widgets", next);
+  }, [enqueueWrite]);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
     refresh,
   };
 }
@@ -3370,6 +3377,836 @@ function ProgressPage({ habits, entries, achievements, goals, tasks, persons, mo
         </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   @section MY-DASHBOARD — "Mein Dashboard": frei zusammenstellbare Fortschrittsseite
+   Zusätzlich zur festen "Fortschritt"-Seite: der Nutzer wählt sich aus einem
+   festen Werkzeugkoffer (DASHBOARD_WIDGET_CATALOG) die Karten aus, die er
+   sehen will, sortiert sie und stellt pro Karte (wo sinnvoll) einen eigenen
+   Zeitraum ein. Auswahl/Reihenfolge/Zeiträume werden unter "los-dashboard-
+   widgets" persistiert.
+   ============================================================ */
+const DASHBOARD_RANGE_PRESETS = [
+  { value: 30, label: "30T" },
+  { value: 90, label: "90T" },
+  { value: 365, label: "1J" },
+  { value: "all", label: "Alle" },
+];
+const DASHBOARD_DEFAULT_RANGE = 30;
+
+const DASHBOARD_WIDGET_GROUPS = ["Habits & Ziele", "Finanzen", "Stimmung & Gesundheit", "Sonstiges"];
+const DASHBOARD_WIDGET_CATALOG = [
+  { id: "weekScore", label: "Wochen-Score", group: "Habits & Ziele", hasRange: false },
+  { id: "habitOverview", label: "Entwicklung im Zeitraum", group: "Habits & Ziele", hasRange: true },
+  { id: "habitCategories", label: "Lebensbereiche im Vergleich", group: "Habits & Ziele", hasRange: true },
+  { id: "habitDetail", label: "Habits im Detail", group: "Habits & Ziele", hasRange: true },
+  { id: "pointsChart", label: "Punkteentwicklung", group: "Habits & Ziele", hasRange: true },
+  { id: "goalsWidget", label: "Ziele", group: "Habits & Ziele", hasRange: true },
+  { id: "meetingsWidget", label: "Treffen", group: "Habits & Ziele", hasRange: true },
+  { id: "achievementsWidget", label: "Erfolge", group: "Habits & Ziele", hasRange: true },
+  { id: "financeOverview", label: "Finanzen-Überblick", group: "Finanzen", hasRange: true },
+  { id: "financeByArea", label: "Ausgaben nach Bereich", group: "Finanzen", hasRange: true },
+  { id: "moodTrend", label: "Stimmungsverlauf", group: "Stimmung & Gesundheit", hasRange: true },
+  { id: "symptomsWidget", label: "Symptome", group: "Stimmung & Gesundheit", hasRange: true },
+  { id: "journalActivity", label: "Journal-Aktivität", group: "Sonstiges", hasRange: true },
+  { id: "notesActivity", label: "Notizen-Aktivität", group: "Sonstiges", hasRange: true },
+  { id: "shoppingSnapshot", label: "Einkaufsliste", group: "Sonstiges", hasRange: false },
+];
+const DASHBOARD_WIDGET_DEFAULT_ENABLED = ["weekScore", "habitOverview", "pointsChart"];
+
+function dashboardResolveRange(rangeDays, earliestKey) {
+  const endKey = todayKey();
+  if (rangeDays === "all") return { startKey: earliestKey || endKey, endKey };
+  const days = Number(rangeDays) || DASHBOARD_DEFAULT_RANGE;
+  return { startKey: toKey(addDays(new Date(), -(days - 1))), endKey };
+}
+function dashboardPreviousRange(startKey, endKey) {
+  const days = Math.round((keyToDate(endKey) - keyToDate(startKey)) / 86400000) + 1;
+  return { prevStart: toKey(addDays(keyToDate(startKey), -days)), prevEnd: toKey(addDays(keyToDate(startKey), -1)) };
+}
+function dashboardDateKeysInRange(startKey, endKey) {
+  const keys = [];
+  let cursor = keyToDate(startKey);
+  const end = keyToDate(endKey);
+  while (cursor <= end) { keys.push(toKey(cursor)); cursor = addDays(cursor, 1); }
+  return keys;
+}
+function dashboardBuildDailyPointsMap(allStats, goals, tasks) {
+  const map = {};
+  (allStats || []).forEach((s) => (s.daily || []).forEach((d) => { map[d.date] = (map[d.date] || 0) + d.delta; }));
+  (goals || []).filter((g) => g.achieved && g.achievedAt).forEach((g) => { map[g.achievedAt] = (map[g.achievedAt] || 0) + g.points; });
+  (tasks || []).filter((t) => t.completed && t.completedAt).forEach((t) => { map[t.completedAt] = (map[t.completedAt] || 0) + t.points; });
+  return map;
+}
+function dashboardBuildDailyStatusMap(allStats) {
+  const map = {};
+  (allStats || []).forEach((s) => (s.daily || []).forEach((d) => {
+    if (d.status === "empty" || d.status === "skip") return;
+    if (!map[d.date]) map[d.date] = { success: 0, fail: 0 };
+    map[d.date][d.status] += 1;
+  }));
+  return map;
+}
+function dashboardEarliestKey(keys) { return keys.length ? keys.slice().sort()[0] : null; }
+
+/* --- Karten-Rahmen: Titel, Zeitraum-Umschalter, Sortieren, Entfernen --- */
+function DashboardWidgetCard({ title, hasRange, rangeDays, onRangeChange, onMoveUp, onMoveDown, canMoveUp, canMoveDown, onRemove, children }) {
+  const smallBtnStyle = (disabled, danger) => ({
+    display: "inline-flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, borderRadius: 7,
+    border: `1px solid ${danger ? COLORS.coral : COLORS.border}`, background: "transparent",
+    color: disabled ? COLORS.borderSoft : danger ? COLORS.coral : COLORS.textMuted,
+    cursor: disabled ? "default" : "pointer", flexShrink: 0,
+  });
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+        <SectionLabel>{title}</SectionLabel>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          {hasRange && (
+            <div style={{ display: "flex", gap: 4 }}>
+              {DASHBOARD_RANGE_PRESETS.map((p) => (
+                <button key={String(p.value)} onClick={() => onRangeChange(p.value)} style={{
+                  ...ghostBtn, padding: "4px 8px", fontSize: 10.5,
+                  color: rangeDays === p.value ? COLORS.ember2 : COLORS.textMuted,
+                  borderColor: rangeDays === p.value ? COLORS.ember2 : COLORS.border,
+                  background: rangeDays === p.value ? COLORS.ember2 + "14" : "transparent",
+                }}>{p.label}</button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 3 }}>
+            <button onClick={() => canMoveUp && onMoveUp()} disabled={!canMoveUp} title="Nach oben" style={smallBtnStyle(!canMoveUp)}><ChevronUp size={13} /></button>
+            <button onClick={() => canMoveDown && onMoveDown()} disabled={!canMoveDown} title="Nach unten" style={smallBtnStyle(!canMoveDown)}><ChevronDown size={13} /></button>
+            <button onClick={onRemove} title="Entfernen" style={smallBtnStyle(false, true)}><X size={13} /></button>
+          </div>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/* --- Werkzeugkoffer: alle verfügbaren Karten an/aus --- */
+function DashboardManagePanel({ enabledIds, onToggle }) {
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
+      <SectionLabel>Werkzeugkoffer</SectionLabel>
+      <p style={{ fontSize: 12, color: COLORS.textFaint, marginTop: -4, marginBottom: 14 }}>
+        Häkchen setzen, um eine Karte auf der Seite anzuzeigen. Reihenfolge und Zeitraum stellst du direkt an der jeweiligen Karte unten ein.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {DASHBOARD_WIDGET_GROUPS.map((group) => (
+          <div key={group}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.textFaint, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{group}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {DASHBOARD_WIDGET_CATALOG.filter((w) => w.group === group).map((w) => {
+                const active = enabledIds.includes(w.id);
+                return (
+                  <button key={w.id} onClick={() => onToggle(w.id)} style={{
+                    ...ghostBtn, display: "flex", alignItems: "center", gap: 6, padding: "7px 11px",
+                    color: active ? COLORS.ember2 : COLORS.textMuted,
+                    borderColor: active ? COLORS.ember2 : COLORS.border,
+                    background: active ? COLORS.ember2 + "14" : "transparent",
+                  }}>
+                    {active ? <Check size={13} /> : <Plus size={13} />} {w.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* --- Einzelne Werkzeuge --- */
+
+function DashboardWeekScore({ allStats, moods, persons, tasks, goals }) {
+  const dailyStatusMap = useMemo(() => dashboardBuildDailyStatusMap(allStats), [allStats]);
+  const analysis = useMemo(() => {
+    const meetingDates = (persons || []).filter((p) => p.meetingTrackingEnabled !== false).flatMap((p) => p.meetings || []);
+    const doneDates = [
+      ...(tasks || []).filter((t) => t.completed && t.completedAt).map((t) => t.completedAt),
+      ...(goals || []).filter((g) => g.achieved && g.achievedAt).map((g) => g.achievedAt),
+    ];
+    const today = new Date();
+    const currentWeekStart = startOfWeek(today);
+    const daysElapsed = Math.min(7, Math.floor((today - currentWeekStart) / 86400000) + 1);
+    const baselineWeeks = 8;
+
+    const weeks = Array.from({ length: baselineWeeks + 1 }, (_, i) => {
+      const offset = baselineWeeks - i;
+      const weekStart = addDays(currentWeekStart, -7 * offset);
+      const isCurrent = offset === 0;
+      const days = isCurrent ? daysElapsed : 7;
+      const dayKeys = Array.from({ length: days }, (_, d) => toKey(addDays(weekStart, d)));
+      let success = 0, fail = 0;
+      dayKeys.forEach((k) => { const s = dailyStatusMap[k]; if (s) { success += s.success; fail += s.fail; } });
+      return {
+        habitRate: (success + fail) > 0 ? (success / (success + fail)) * 100 : null,
+        mood: moodAverage(moods, dayKeys),
+        meetingsPerDay: meetingDates.filter((d) => dayKeys.includes(d)).length / days,
+        donePerDay: doneDates.filter((d) => dayKeys.includes(d)).length / days,
+      };
+    });
+    const current = weeks[weeks.length - 1];
+    const baseline = weeks.slice(0, -1);
+    const metrics = [
+      { key: "habitRate", label: "Habits" }, { key: "mood", label: "Stimmung" },
+      { key: "meetingsPerDay", label: "Treffen" }, { key: "donePerDay", label: "Erledigt" },
+    ].map(({ key, label }) => {
+      const value = current[key];
+      const baselineValues = baseline.map((w) => w[key]).filter((v) => v !== null && v !== undefined && v > 0);
+      if (value === null || value === undefined || baselineValues.length === 0) return { key, label, available: false };
+      const baselineAvg = baselineValues.reduce((a, b) => a + b, 0) / baselineValues.length;
+      if (baselineAvg <= 0) return { key, label, available: false };
+      const ratioPct = Math.round(Math.min(200, Math.max(50, (value / baselineAvg) * 100)));
+      return { key, label, available: true, ratioPct };
+    });
+    const available = metrics.filter((m) => m.available);
+    const score = available.length > 0 ? Math.round(available.reduce((sum, m) => sum + m.ratioPct, 0) / available.length) : null;
+    const label = score === null ? null : score >= 112 ? "Starke Woche" : score <= 88 ? "Schwächere Woche" : "Durchschnittliche Woche";
+    return { score, metrics, label, baselineWeeks };
+  }, [dailyStatusMap, moods, persons, tasks, goals]);
+
+  if (analysis.score === null) {
+    return <div style={{ fontSize: 13, color: COLORS.textMuted }}>Noch nicht genug Verlauf für einen Vergleich - trag ein paar Wochen weiter, dann erscheint hier eine Einschätzung.</div>;
+  }
+  return (
+    <div>
+      <div style={{
+        fontFamily: "Fraunces, serif", fontSize: 24, fontWeight: 600,
+        color: analysis.score >= 112 ? COLORS.mint : analysis.score <= 88 ? COLORS.coral : COLORS.ember2,
+      }}>
+        {analysis.label}
+      </div>
+      <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: 4, marginBottom: 10 }}>
+        {analysis.score}% deines {analysis.baselineWeeks}-Wochen-Schnitts
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {analysis.metrics.filter((m) => m.available).map((m) => (
+          <span key={m.key} style={{
+            display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, padding: "4px 9px", borderRadius: 7,
+            background: COLORS.bgSoft, color: m.ratioPct >= 105 ? COLORS.mint : m.ratioPct <= 95 ? COLORS.coral : COLORS.textMuted,
+          }}>
+            {m.ratioPct >= 105 ? "↑" : m.ratioPct <= 95 ? "↓" : "→"} {m.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DashboardHabitOverview({ allStats, goals, tasks, rangeDays }) {
+  const dailyStatusMap = useMemo(() => dashboardBuildDailyStatusMap(allStats), [allStats]);
+  const dailyPointsMap = useMemo(() => dashboardBuildDailyPointsMap(allStats, goals, tasks), [allStats, goals, tasks]);
+  const result = useMemo(() => {
+    const earliest = dashboardEarliestKey(Object.keys(dailyStatusMap));
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, earliest);
+    const summarize = (from, to) => {
+      let success = 0, fail = 0, activeDays = 0, points = 0;
+      Object.entries(dailyStatusMap).forEach(([key, value]) => {
+        if (key < from || key > to) return;
+        success += value.success; fail += value.fail;
+        if (value.success + value.fail > 0) activeDays += 1;
+      });
+      Object.entries(dailyPointsMap).forEach(([key, value]) => { if (key >= from && key <= to) points += value; });
+      const tracked = success + fail;
+      return { success, fail, tracked, activeDays, points, rate: tracked ? Math.round(success / tracked * 100) : null };
+    };
+    const calendarDays = rangeDays === "all" ? Math.max(1, Math.round((keyToDate(endKey) - keyToDate(startKey)) / 86400000) + 1) : rangeDays;
+    const current = summarize(startKey, endKey);
+    let previous = null;
+    if (rangeDays !== "all") {
+      const { prevStart, prevEnd } = dashboardPreviousRange(startKey, endKey);
+      previous = summarize(prevStart, prevEnd);
+    }
+    const rateDelta = current.rate !== null && previous && previous.rate !== null ? current.rate - previous.rate : null;
+    return { current, rateDelta, calendarDays };
+  }, [dailyStatusMap, dailyPointsMap, rangeDays]);
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
+        <StatCard label="Erfüllungsquote" value={result.current.rate ?? "–"} suffix={result.current.rate === null ? "" : "%"} accent={COLORS.mint} />
+        <StatCard label="Trend zur Vorperiode" value={result.rateDelta === null ? "–" : `${result.rateDelta > 0 ? "+" : ""}${result.rateDelta}`} suffix={result.rateDelta === null ? "" : " %-Pkt."} accent={result.rateDelta === null ? COLORS.textFaint : result.rateDelta >= 0 ? COLORS.mint : COLORS.coral} />
+        <StatCard label="Aktive Tage" value={result.current.activeDays} suffix={`/ ${result.calendarDays}`} accent={COLORS.violet} />
+        <StatCard label="Punkte im Zeitraum" value={result.current.points >= 0 ? `+${result.current.points}` : result.current.points} suffix="" accent={result.current.points >= 0 ? COLORS.ember2 : COLORS.coral} />
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ padding: "9px 11px", background: COLORS.bgSoft, borderRadius: 9, fontSize: 12, color: COLORS.textMuted }}><strong style={{ color: COLORS.mint }}>{result.current.success}</strong> erfüllt</div>
+        <div style={{ padding: "9px 11px", background: COLORS.bgSoft, borderRadius: 9, fontSize: 12, color: COLORS.textMuted }}><strong style={{ color: COLORS.coral }}>{result.current.fail}</strong> nicht erfüllt</div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardHabitCategories({ habits, allStats, rangeDays }) {
+  const categories = useMemo(() => {
+    const allKeys = [];
+    (allStats || []).forEach((s) => (s.daily || []).forEach((d) => { if (d.status !== "empty") allKeys.push(d.date); }));
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(allKeys));
+    const categoryMap = {};
+    (habits || []).forEach((habit, index) => {
+      const days = (allStats[index]?.daily || []).filter((d) => d.date >= startKey && d.date <= endKey && d.status !== "empty");
+      if (days.length === 0) return;
+      const success = days.filter((d) => d.status === "success").length;
+      const category = categoryOf(habit);
+      if (!categoryMap[category]) categoryMap[category] = { category, success: 0, tracked: 0 };
+      categoryMap[category].success += success;
+      categoryMap[category].tracked += days.length;
+    });
+    return Object.values(categoryMap)
+      .map((item) => ({ ...item, rate: item.tracked ? Math.round(item.success / item.tracked * 100) : 0 }))
+      .sort((a, b) => b.rate - a.rate);
+  }, [habits, allStats, rangeDays]);
+
+  if (categories.length === 0) return <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurden noch keine Habits getrackt.</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {categories.map((category) => (
+        <div key={category.category}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 5, fontSize: 12.5 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: categoryColor(category.category) }} />{category.category}</span>
+            <span style={{ fontFamily: "JetBrains Mono, monospace", color: COLORS.textMuted }}>{category.rate}% · {category.tracked} Einträge</span>
+          </div>
+          <div style={{ height: 8, background: COLORS.bgSoft, borderRadius: 5, overflow: "hidden" }}><div style={{ height: "100%", width: `${category.rate}%`, background: categoryColor(category.category), borderRadius: 5 }} /></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DashboardHabitDetail({ habits, allStats, rangeDays }) {
+  const rows = useMemo(() => {
+    const allKeys = [];
+    (allStats || []).forEach((s) => (s.daily || []).forEach((d) => { if (d.status !== "empty") allKeys.push(d.date); }));
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(allKeys));
+    const { prevStart, prevEnd } = rangeDays === "all" ? { prevStart: null, prevEnd: null } : dashboardPreviousRange(startKey, endKey);
+    return (habits || []).map((habit, index) => {
+      const stats = allStats[index];
+      const currentDays = (stats?.daily || []).filter((d) => d.date >= startKey && d.date <= endKey && d.status !== "empty");
+      const previousDays = prevStart ? (stats?.daily || []).filter((d) => d.date >= prevStart && d.date <= prevEnd && d.status !== "empty") : [];
+      const success = currentDays.filter((d) => d.status === "success").length;
+      const previousSuccess = previousDays.filter((d) => d.status === "success").length;
+      const rate = currentDays.length ? Math.round(success / currentDays.length * 100) : null;
+      const previousRate = previousDays.length ? Math.round(previousSuccess / previousDays.length * 100) : null;
+      return { habit, stats, tracked: currentDays.length, rate, delta: rate !== null && previousRate !== null ? rate - previousRate : null };
+    }).filter((row) => row.tracked > 0).sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
+  }, [habits, allStats, rangeDays]);
+
+  if (rows.length === 0) return <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurden noch keine Habits getrackt.</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {rows.map(({ habit, stats, rate, tracked, delta }) => {
+        const Icon = iconFor(habit.icon);
+        return (
+          <div key={habit.id}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5, gap: 8 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 500, minWidth: 0 }}>
+                <Icon size={13} style={{ color: habit.color, flexShrink: 0 }} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{habit.name}</span>
+                {stats.currentStreak > 0 && (
+                  <span style={{ display: "flex", alignItems: "center", gap: 2, color: COLORS.ember2, fontSize: 11, fontFamily: "JetBrains Mono, monospace", flexShrink: 0 }}>
+                    <Flame size={10} style={{ color: COLORS.ember1 }} />{stats.currentStreak}
+                  </span>
+                )}
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>
+                <span style={{ color: COLORS.textFaint }}>{tracked} Einträge</span>
+                {delta !== null && <span style={{ color: delta >= 0 ? COLORS.mint : COLORS.coral }}>{delta > 0 ? "+" : ""}{delta} %-Pkt.</span>}
+                <strong style={{ color: habit.color, fontSize: 12.5 }}>{rate}%</strong>
+              </span>
+            </div>
+            <div style={{ height: 7, borderRadius: 4, background: COLORS.bgSoft, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${rate}%`, borderRadius: 4, background: habit.color }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DashboardPointsChart({ allStats, goals, tasks, rangeDays }) {
+  const dailyPointsMap = useMemo(() => dashboardBuildDailyPointsMap(allStats, goals, tasks), [allStats, goals, tasks]);
+  const series = useMemo(() => {
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(Object.keys(dailyPointsMap)));
+    let running = 0;
+    const full = Object.keys(dailyPointsMap).sort()
+      .filter((key) => key >= startKey && key <= endKey)
+      .map((key) => { running += dailyPointsMap[key]; return { key, date: shortDate(key), points: dailyPointsMap[key], total: running }; });
+    if (full.length <= 500) return full;
+    const step = Math.ceil(full.length / 500);
+    const reduced = full.filter((_, index) => index % step === 0);
+    const last = full[full.length - 1];
+    if (reduced[reduced.length - 1]?.key !== last.key) reduced.push(last);
+    return reduced;
+  }, [dailyPointsMap, rangeDays]);
+
+  if (series.length === 0) return <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Noch keine Punkte in diesem Zeitraum.</div>;
+  return (
+    <ResponsiveContainer width="100%" height={230}>
+      <ComposedChart data={series}>
+        <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
+        <XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={{ stroke: COLORS.border }} tickLine={false} minTickGap={30} />
+        <YAxis tick={{ fill: COLORS.textFaint, fontSize: 11 }} axisLine={false} tickLine={false} />
+        <Tooltip
+          contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }}
+          labelStyle={{ color: COLORS.text }}
+          formatter={(value, name) => [`${value >= 0 ? "+" : ""}${value}`, name === "points" ? "Tagespunkte" : "Summe"]}
+        />
+        <Bar dataKey="points" radius={[4, 4, 0, 0]} maxBarSize={28}>
+          {series.map((d) => <Cell key={d.key} fill={d.points >= 0 ? COLORS.ember2 : COLORS.coral} />)}
+        </Bar>
+        <Line type="monotone" dataKey="total" stroke={COLORS.violet} strokeWidth={2.5} dot={false} />
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+function DashboardGoals({ goals, rangeDays }) {
+  const data = useMemo(() => {
+    const achievedAll = (goals || []).filter((g) => g.achieved && g.achievedAt);
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(achievedAll.map((g) => g.achievedAt)));
+    const achieved = achievedAll.filter((g) => g.achievedAt >= startKey && g.achievedAt <= endKey).sort((a, b) => (b.achievedAt || "").localeCompare(a.achievedAt || ""));
+    const openCount = (goals || []).filter((g) => !g.achieved).length;
+    const points = achieved.reduce((sum, g) => sum + g.points, 0);
+    return { achieved, openCount, points };
+  }, [goals, rangeDays]);
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
+        <StatCard label="Erreicht" value={data.achieved.length} suffix="" accent={COLORS.mint} />
+        <StatCard label="Aktuell offen" value={data.openCount} suffix="" accent={COLORS.textFaint} />
+        <StatCard label="Punkte aus Zielen" value={data.points} suffix="" accent={COLORS.ember2} />
+      </div>
+      {data.achieved.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurde kein Ziel erreicht.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {data.achieved.map((g) => (
+            <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: COLORS.bgSoft, borderRadius: 9 }}>
+              <Target size={13} style={{ color: COLORS.violet, flexShrink: 0 }} />
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{g.title}</span>
+              {g.achievedAt && <span style={{ fontSize: 11, color: COLORS.textFaint, fontFamily: "JetBrains Mono, monospace" }}>{shortDate(g.achievedAt)}</span>}
+              <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, fontWeight: 700, color: COLORS.ember2, minWidth: 46, textAlign: "right" }}>+{g.points}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DashboardMeetings({ persons, rangeDays }) {
+  const data = useMemo(() => {
+    const meetingPersons = (persons || []).filter((p) => p.meetingTrackingEnabled !== false);
+    const allDates = meetingPersons.flatMap((p) => p.meetings || []);
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(allDates));
+    const rows = meetingPersons.map((person) => {
+      const dates = (person.meetings || []).filter((d) => d >= startKey && d <= endKey);
+      return { person, count: dates.length, lastDate: dates.slice().sort().at(-1) || null };
+    }).filter((row) => row.count > 0).sort((a, b) => b.count - a.count || a.person.name.localeCompare(b.person.name, "de"));
+    const currentCount = rows.reduce((sum, row) => sum + row.count, 0);
+    let delta = null;
+    if (rangeDays !== "all") {
+      const { prevStart, prevEnd } = dashboardPreviousRange(startKey, endKey);
+      const previousCount = allDates.filter((d) => d >= prevStart && d <= prevEnd).length;
+      delta = currentCount - previousCount;
+    }
+    return { rows, currentCount, delta };
+  }, [persons, rangeDays]);
+
+  const maxCount = data.rows[0]?.count || 1;
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: data.rows.length ? 14 : 0 }}>
+        <StatCard label="Treffen" value={data.currentCount} suffix="" accent={COLORS.mint} />
+        <StatCard label="Getroffene Personen" value={data.rows.length} suffix="" accent={COLORS.violet} />
+        <StatCard label="Zur Vorperiode" value={data.delta === null ? "–" : `${data.delta > 0 ? "+" : ""}${data.delta}`} suffix=" Treffen" accent={data.delta === null ? COLORS.textFaint : data.delta >= 0 ? COLORS.mint : COLORS.coral} />
+      </div>
+      {data.rows.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum sind noch keine Treffen eingetragen.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {data.rows.map((row) => (
+            <div key={row.person.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, minWidth: 0 }}>
+                  <Users size={12} style={{ color: row.person.color || COLORS.violet, flexShrink: 0 }} />
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.person.name}</span>
+                </span>
+                <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: COLORS.textMuted, flexShrink: 0 }}>{row.count}×</span>
+              </div>
+              <div style={{ height: 6, background: COLORS.bgSoft, borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.max(4, row.count / maxCount * 100)}%`, background: row.person.color || COLORS.violet, borderRadius: 4 }} />
+              </div>
+              {row.lastDate && <div style={{ fontSize: 10.5, color: COLORS.textFaint, marginTop: 3 }}>Zuletzt: {shortDate(row.lastDate)}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DashboardAchievements({ achievements, rangeDays }) {
+  const list = useMemo(() => {
+    const all = achievements || [];
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(all.map((a) => a.date)));
+    return all.filter((a) => a.date >= startKey && a.date <= endKey);
+  }, [achievements, rangeDays]);
+
+  if (list.length === 0) return <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurde kein neuer Erfolg freigeschaltet.</div>;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
+      {list.map((unlocked) => {
+        const a = ACHIEVEMENT_DEFS.find((definition) => definition.id === unlocked.id);
+        if (!a) return null;
+        const AIcon = a.icon;
+        return (
+          <div key={a.id + unlocked.date} style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14, borderRadius: 14, background: a.color + "14", border: `1px solid ${a.color + "55"}` }}>
+            <AIcon size={20} style={{ color: a.color }} />
+            <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{a.label}</div>
+            <div style={{ fontSize: 10.5, color: COLORS.textFaint, fontFamily: "JetBrains Mono, monospace" }}>{shortDate(unlocked.date)}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DashboardFinanceOverview({ financeEntries, rangeDays }) {
+  const data = useMemo(() => {
+    const all = financeEntries || [];
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(all.map((e) => e.date)));
+    const effective = financeEffectiveEntriesForRange(all, startKey, endKey);
+    const sumByType = (t) => effective.filter((e) => e.type === t).reduce((sum, e) => sum + e.amount, 0);
+    const income = sumByType("income");
+    const expense = sumByType("expense");
+    const invest = sumByType("investment");
+    const months = financeMonthsBetween(startKey, endKey).map((monthKey) => {
+      const monthEntries = financeEffectiveEntriesForMonth(all, monthKey);
+      const monthIncome = monthEntries.filter((e) => e.type === "income").reduce((s, e) => s + e.amount, 0);
+      const monthExpense = monthEntries.filter((e) => e.type === "expense").reduce((s, e) => s + e.amount, 0);
+      return { month: financeMonthLabel(monthKey), net: Math.round((monthIncome - monthExpense) * 100) / 100 };
+    });
+    return { income, expense, net: income - expense, invest, months };
+  }, [financeEntries, rangeDays]);
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10, marginBottom: 16 }}>
+        <StatCard label="Einnahmen" value={Math.round(data.income)} suffix=" €" accent={COLORS.mint} />
+        <StatCard label="Ausgaben" value={Math.round(data.expense)} suffix=" €" accent={COLORS.coral} />
+        <StatCard label="Saldo" value={data.net >= 0 ? `+${Math.round(data.net)}` : Math.round(data.net)} suffix=" €" accent={data.net >= 0 ? COLORS.mint : COLORS.coral} />
+        <StatCard label="Investiert" value={Math.round(data.invest)} suffix=" €" accent={COLORS.violet} />
+      </div>
+      {data.months.length > 1 && (
+        <ResponsiveContainer width="100%" height={180}>
+          <BarChart data={data.months}>
+            <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="month" tick={{ fill: COLORS.textFaint, fontSize: 10.5 }} axisLine={false} tickLine={false} minTickGap={14} />
+            <YAxis tick={{ fill: COLORS.textFaint, fontSize: 10.5 }} axisLine={false} tickLine={false} />
+            <Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} formatter={(value) => [`${value >= 0 ? "+" : ""}${value} €`, "Saldo"]} />
+            <Bar dataKey="net" radius={[4, 4, 0, 0]} maxBarSize={28}>
+              {data.months.map((m, i) => <Cell key={i} fill={m.net >= 0 ? COLORS.mint : COLORS.coral} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
+function DashboardFinanceByArea({ financeEntries, rangeDays }) {
+  const areas = useMemo(() => {
+    const all = financeEntries || [];
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(all.map((e) => e.date)));
+    const effective = financeEffectiveEntriesForRange(all, startKey, endKey);
+    const map = new Map();
+    effective.forEach((e) => {
+      if (e.type !== "expense" && e.type !== "income") return;
+      const area = (e.category || "").trim() || FINANCE_NO_AREA;
+      if (!map.has(area)) map.set(area, { area, expenseSum: 0, incomeSum: 0 });
+      const row = map.get(area);
+      if (e.type === "expense") row.expenseSum += e.amount; else row.incomeSum += e.amount;
+    });
+    return [...map.values()].map((row) => ({ ...row, saldo: row.expenseSum - row.incomeSum })).sort((a, b) => b.saldo - a.saldo);
+  }, [financeEntries, rangeDays]);
+
+  if (areas.length === 0) return <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum sind noch keine Finanz-Einträge mit Bereich vorhanden.</div>;
+  const maxAbs = Math.max(1, ...areas.map((a) => Math.abs(a.saldo)));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {areas.map((row) => (
+        <div key={row.area}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 5, fontSize: 12.5 }}>
+            <span style={{ fontWeight: 600 }}>{row.area}</span>
+            <span style={{ fontFamily: "JetBrains Mono, monospace", color: row.saldo >= 0 ? COLORS.coral : COLORS.mint }}>{row.saldo >= 0 ? "-" : "+"}{Math.round(Math.abs(row.saldo))} €</span>
+          </div>
+          <div style={{ height: 8, background: COLORS.bgSoft, borderRadius: 5, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${Math.max(3, Math.round(Math.abs(row.saldo) / maxAbs * 100))}%`, background: row.saldo >= 0 ? COLORS.coral : COLORS.mint, borderRadius: 5 }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DashboardMoodTrend({ moods, rangeDays }) {
+  const result = useMemo(() => {
+    const allKeys = Object.keys(moods || {});
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(allKeys));
+    const dateKeys = dashboardDateKeysInRange(startKey, endKey);
+    const series = dateKeys.map((k) => {
+      const entry = moods[k];
+      return { date: shortDate(k), mentalEnergy: entry?.mentalEnergy ?? null, physicalEnergy: physicalEnergyOf(entry) ?? null, overall: overallMood(entry) };
+    });
+    return {
+      series,
+      avgMental: fieldAverage(moods, dateKeys, (e) => e?.mentalEnergy),
+      avgPhysical: fieldAverage(moods, dateKeys, physicalEnergyOf),
+      avgOverall: moodAverage(moods, dateKeys),
+    };
+  }, [moods, rangeDays]);
+
+  const hasData = result.series.some((d) => d.overall !== null);
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10, marginBottom: 14 }}>
+        <StatCard label="Ø Gesamt" value={result.avgOverall ?? "–"} suffix={result.avgOverall === null ? "" : " / 5"} accent={COLORS.violet} />
+        <StatCard label="Ø Mentale Energie" value={result.avgMental ?? "–"} suffix={result.avgMental === null ? "" : " / 5"} accent={COLORS.mint} />
+        <StatCard label="Ø Körperliche Energie" value={result.avgPhysical ?? "–"} suffix={result.avgPhysical === null ? "" : " / 5"} accent={COLORS.ember2} />
+      </div>
+      {hasData ? (
+        <ResponsiveContainer width="100%" height={200}>
+          <LineChart data={result.series}>
+            <CartesianGrid stroke={COLORS.borderSoft} strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="date" tick={{ fill: COLORS.textFaint, fontSize: 10.5 }} axisLine={{ stroke: COLORS.border }} tickLine={false} minTickGap={30} />
+            <YAxis domain={[1, 5]} tick={{ fill: COLORS.textFaint, fontSize: 10.5 }} axisLine={false} tickLine={false} />
+            <Tooltip contentStyle={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`, borderRadius: 8, fontSize: 12 }} />
+            <Line type="monotone" dataKey="overall" name="Gesamt" stroke={COLORS.violet} strokeWidth={2.5} dot={false} connectNulls />
+            <Line type="monotone" dataKey="mentalEnergy" name="Mentale Energie" stroke={COLORS.mint} strokeWidth={1.5} dot={false} connectNulls />
+            <Line type="monotone" dataKey="physicalEnergy" name="Körperliche Energie" stroke={COLORS.ember2} strokeWidth={1.5} dot={false} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      ) : (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurde noch keine Stimmung erfasst.</div>
+      )}
+    </div>
+  );
+}
+
+function DashboardSymptoms({ moods, rangeDays }) {
+  const result = useMemo(() => {
+    const allKeys = Object.keys(moods || {});
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(allKeys));
+    const dateKeys = dashboardDateKeysInRange(startKey, endKey);
+    const symptomDays = dateKeys.filter((k) => (moods[k]?.symptoms || []).length > 0).length;
+    const counts = new Map();
+    dateKeys.forEach((k) => { (moods[k]?.symptoms || []).forEach((s) => counts.set(s, (counts.get(s) || 0) + 1)); });
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    return { symptomDays, trackedDays: dateKeys.filter((k) => moods[k]).length, top };
+  }, [moods, rangeDays]);
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginBottom: 14 }}>
+        <StatCard label="Tage mit Symptomen" value={result.symptomDays} suffix="" accent={result.symptomDays > 0 ? COLORS.coral : COLORS.mint} />
+        <StatCard label="Erfasste Tage" value={result.trackedDays} suffix="" accent={COLORS.textFaint} />
+      </div>
+      {result.top.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Keine Symptome in diesem Zeitraum erfasst.</div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {result.top.map(([symptom, count]) => (
+            <span key={symptom} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "5px 10px", borderRadius: 8, background: COLORS.bgSoft, color: COLORS.textMuted }}>
+              {symptom} <strong style={{ color: COLORS.coral }}>×{count}</strong>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DashboardJournalActivity({ journal, rangeDays }) {
+  const result = useMemo(() => {
+    const allKeys = Object.keys(journal || {});
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(allKeys));
+    const dateKeys = dashboardDateKeysInRange(startKey, endKey);
+    const writtenKeys = dateKeys.filter((k) => stripHtml(journal[k]?.text).length > 0);
+    return { count: writtenKeys.length, total: dateKeys.length, recent: writtenKeys.slice().sort().reverse().slice(0, 5) };
+  }, [journal, rangeDays]);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12 }}>
+        <StatCard label="Tage mit Journal-Eintrag" value={result.count} suffix={` / ${result.total}`} accent={COLORS.violet} />
+      </div>
+      {result.recent.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurde noch nichts ins Journal geschrieben.</div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {result.recent.map((k) => (
+            <span key={k} style={{ fontSize: 11.5, padding: "5px 10px", borderRadius: 8, background: COLORS.bgSoft, color: COLORS.textMuted, fontFamily: "JetBrains Mono, monospace" }}>{shortDate(k)}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DashboardNotesActivity({ notes, rangeDays }) {
+  const result = useMemo(() => {
+    const all = notes || [];
+    const dateOf = (n) => (n.updatedAt || n.createdAt || "").slice(0, 10);
+    const { startKey, endKey } = dashboardResolveRange(rangeDays, dashboardEarliestKey(all.map((n) => (n.createdAt || "").slice(0, 10)).filter(Boolean)));
+    const inRange = all.filter((n) => { const d = dateOf(n); return d && d >= startKey && d <= endKey; }).sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
+    return { count: inRange.length, recent: inRange.slice(0, 5) };
+  }, [notes, rangeDays]);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12 }}>
+        <StatCard label="Notizen bearbeitet" value={result.count} suffix="" accent={COLORS.violet} />
+      </div>
+      {result.recent.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>In diesem Zeitraum wurde keine Notiz erstellt oder bearbeitet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {result.recent.map((n) => (
+            <div key={n.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: COLORS.bgSoft, borderRadius: 9 }}>
+              <FileText size={13} style={{ color: COLORS.violet, flexShrink: 0 }} />
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.title || "Ohne Titel"}</span>
+              <span style={{ fontSize: 11, color: COLORS.textFaint, fontFamily: "JetBrains Mono, monospace", flexShrink: 0 }}>{shortDate((n.updatedAt || n.createdAt || "").slice(0, 10))}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DashboardShoppingSnapshot({ shoppingList }) {
+  const open = (shoppingList || []).filter((e) => !e.completed);
+  return (
+    <div>
+      <div style={{ marginBottom: 12 }}>
+        <StatCard label="Offene Artikel" value={open.length} suffix="" accent={open.length > 0 ? COLORS.ember2 : COLORS.mint} />
+      </div>
+      {open.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: COLORS.textFaint }}>Alles eingekauft.</div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {open.slice(0, 12).map((e) => (
+            <span key={e.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "5px 10px", borderRadius: 8, background: COLORS.bgSoft, color: COLORS.textMuted }}>
+              <ShoppingCart size={11} /> {e.name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --- Dispatcher: wählt die passende Widget-Komponente --- */
+function DashboardWidgetBody({ id, rangeDays, habits, entries, allStats, achievements, goals, tasks, persons, moods, financeEntries, journal, notes, shoppingList }) {
+  switch (id) {
+    case "weekScore": return <DashboardWeekScore allStats={allStats} moods={moods} persons={persons} tasks={tasks} goals={goals} />;
+    case "habitOverview": return <DashboardHabitOverview allStats={allStats} goals={goals} tasks={tasks} rangeDays={rangeDays} />;
+    case "habitCategories": return <DashboardHabitCategories habits={habits} allStats={allStats} rangeDays={rangeDays} />;
+    case "habitDetail": return <DashboardHabitDetail habits={habits} allStats={allStats} rangeDays={rangeDays} />;
+    case "pointsChart": return <DashboardPointsChart allStats={allStats} goals={goals} tasks={tasks} rangeDays={rangeDays} />;
+    case "goalsWidget": return <DashboardGoals goals={goals} rangeDays={rangeDays} />;
+    case "meetingsWidget": return <DashboardMeetings persons={persons} rangeDays={rangeDays} />;
+    case "achievementsWidget": return <DashboardAchievements achievements={achievements} rangeDays={rangeDays} />;
+    case "financeOverview": return <DashboardFinanceOverview financeEntries={financeEntries} rangeDays={rangeDays} />;
+    case "financeByArea": return <DashboardFinanceByArea financeEntries={financeEntries} rangeDays={rangeDays} />;
+    case "moodTrend": return <DashboardMoodTrend moods={moods} rangeDays={rangeDays} />;
+    case "symptomsWidget": return <DashboardSymptoms moods={moods} rangeDays={rangeDays} />;
+    case "journalActivity": return <DashboardJournalActivity journal={journal} rangeDays={rangeDays} />;
+    case "notesActivity": return <DashboardNotesActivity notes={notes} rangeDays={rangeDays} />;
+    case "shoppingSnapshot": return <DashboardShoppingSnapshot shoppingList={shoppingList} />;
+    default: return null;
+  }
+}
+
+/* --- Seite: Werkzeugkoffer-Verwaltung + Liste der aktiven Karten --- */
+function MyDashboardPage({
+  habits, entries, allStats, achievements, goals, tasks, persons, moods,
+  financeEntries, journal, notes, shoppingList,
+  dashboardWidgets, persistDashboardWidgets,
+}) {
+  const config = dashboardWidgets && Array.isArray(dashboardWidgets.enabled) ? dashboardWidgets : { enabled: DASHBOARD_WIDGET_DEFAULT_ENABLED, ranges: {} };
+  const enabledIds = config.enabled;
+  const ranges = config.ranges || {};
+  const [manageOpen, setManageOpen] = useState(enabledIds.length === 0);
+
+  const toggleWidget = (id) => {
+    const isEnabled = enabledIds.includes(id);
+    const nextEnabled = isEnabled ? enabledIds.filter((x) => x !== id) : [...enabledIds, id];
+    persistDashboardWidgets({ enabled: nextEnabled, ranges });
+  };
+  const moveWidget = (id, direction) => {
+    const index = enabledIds.indexOf(id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= enabledIds.length) return;
+    const next = enabledIds.slice();
+    const tmp = next[index]; next[index] = next[target]; next[target] = tmp;
+    persistDashboardWidgets({ enabled: next, ranges });
+  };
+  const removeWidget = (id) => persistDashboardWidgets({ enabled: enabledIds.filter((x) => x !== id), ranges });
+  const setWidgetRange = (id, value) => persistDashboardWidgets({ enabled: enabledIds, ranges: { ...ranges, [id]: value } });
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, margin: 0 }}>Mein Dashboard</h1>
+          <div style={{ fontSize: 12.5, color: COLORS.textFaint, marginTop: 4 }}>Stell dir aus dem Werkzeugkoffer deine eigene Übersicht zusammen.</div>
+        </div>
+        <button onClick={() => setManageOpen((v) => !v)} style={{ ...ghostBtn, display: "flex", alignItems: "center", gap: 6 }}>
+          <Wrench size={14} /> {manageOpen ? "Werkzeugkoffer schließen" : "Werkzeugkoffer öffnen"}
+        </button>
+      </div>
+
+      {manageOpen && <DashboardManagePanel enabledIds={enabledIds} onToggle={toggleWidget} />}
+
+      {enabledIds.length === 0 ? (
+        <div style={{ fontSize: 13, color: COLORS.textFaint, padding: 24, textAlign: "center", background: COLORS.bgSoft, borderRadius: 14 }}>
+          Noch keine Karten ausgewählt - öffne den Werkzeugkoffer oben und wähl aus, was du sehen willst.
+        </div>
+      ) : (
+        enabledIds.map((id, index) => {
+          const def = DASHBOARD_WIDGET_CATALOG.find((w) => w.id === id);
+          if (!def) return null;
+          const rangeDays = ranges[id] ?? DASHBOARD_DEFAULT_RANGE;
+          return (
+            <DashboardWidgetCard
+              key={id} title={def.label} hasRange={def.hasRange} rangeDays={rangeDays}
+              onRangeChange={(value) => setWidgetRange(id, value)}
+              onMoveUp={() => moveWidget(id, -1)} onMoveDown={() => moveWidget(id, 1)}
+              canMoveUp={index > 0} canMoveDown={index < enabledIds.length - 1}
+              onRemove={() => removeWidget(id)}
+            >
+              <DashboardWidgetBody
+                id={id} rangeDays={rangeDays}
+                habits={habits} entries={entries} allStats={allStats} achievements={achievements}
+                goals={goals} tasks={tasks} persons={persons} moods={moods}
+                financeEntries={financeEntries} journal={journal} notes={notes} shoppingList={shoppingList}
+              />
+            </DashboardWidgetCard>
+          );
+        })
+      )}
     </div>
   );
 }
@@ -8059,8 +8896,8 @@ function downloadJSON(filename, obj) {
 }
 
 function SettingsPage({
-  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories,
-  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories,
+  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets,
+  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
   onAnthropicKeyChange,
 }) {
   const fileInputRef = useRef(null);
@@ -8071,7 +8908,7 @@ function SettingsPage({
   const handleExport = () => {
     const payload = {
       app: "life-os", version: 1, exportedAt: new Date().toISOString(),
-      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories },
+      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets },
     };
     downloadJSON(`life-os-backup-${todayKey()}.json`, payload);
   };
@@ -8277,6 +9114,7 @@ function SettingsPage({
     await persistNoteFolders(Array.isArray(pendingImport.noteFolders) ? pendingImport.noteFolders : []);
     await persistFinanceEntries(Array.isArray(pendingImport.financeEntries) ? pendingImport.financeEntries : []);
     await persistFinanceCategories(Array.isArray(pendingImport.financeCategories) ? pendingImport.financeCategories : []);
+    await persistDashboardWidgets(pendingImport.dashboardWidgets && typeof pendingImport.dashboardWidgets === "object" ? pendingImport.dashboardWidgets : null);
     setPendingImport(null);
     setImportSuccess(true);
     setTimeout(() => setImportSuccess(false), 4000);
@@ -8763,6 +9601,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
   const items = [
     { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
     { key: "progress", label: "Fortschritt", Icon: TrendingUp },
+    { key: "mydashboard", label: "Mein Dashboard", Icon: Wrench },
     { key: "mood", label: "Stimmung", Icon: Heart },
     { key: "consumables", label: "Verbrauch", Icon: Droplet },
     { key: "shopping", label: "Einkaufsliste", Icon: ShoppingCart },
@@ -8833,6 +9672,7 @@ function BottomNav({ page, setPage, hasCoach }) {
   const items = [
     { key: "dashboard", label: "Home", Icon: LayoutDashboard },
     { key: "progress", label: "Verlauf", Icon: TrendingUp },
+    { key: "mydashboard", label: "Mein Dash", Icon: Wrench },
     { key: "mood", label: "Stimmung", Icon: Heart },
     { key: "consumables", label: "Verbrauch", Icon: Droplet },
     { key: "shopping", label: "Einkauf", Icon: ShoppingCart },
@@ -8916,8 +9756,8 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
    ============================================================ */
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories,
+    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
@@ -9155,6 +9995,13 @@ export default function LifeOS() {
             />
           )}
           {page === "progress" && <ProgressPage habits={habits} entries={entries} achievements={achievements} goals={goals} tasks={tasks} persons={persons} moods={moods} allStats={allStats} isMobile={isMobile} />}
+          {page === "mydashboard" && (
+            <MyDashboardPage
+              habits={habits} entries={entries} allStats={allStats} achievements={achievements} goals={goals} tasks={tasks} persons={persons} moods={moods}
+              financeEntries={financeEntries} journal={journal} notes={notes} shoppingList={shoppingList}
+              dashboardWidgets={dashboardWidgets} persistDashboardWidgets={persistDashboardWidgets}
+            />
+          )}
           {page === "mood" && <MoodPage moods={moods} persistMoods={persistMoods} currentDateKey={currentDateKey} />}
           {page === "consumables" && <ConsumablesPage consumables={consumables} persistConsumables={persistConsumables} shoppingList={shoppingList} persistShoppingList={persistShoppingList} />}
           {page === "shopping" && <ShoppingListPage shoppingList={shoppingList} persistShoppingList={persistShoppingList} consumables={consumables} persistConsumables={persistConsumables} />}
@@ -9168,10 +10015,10 @@ export default function LifeOS() {
           {page === "settings" && (
             <SettingsPage
               habits={habits} entries={entries} achievements={achievements} coach={coach}
-              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList} notes={notes} noteFolders={noteFolders} financeEntries={financeEntries} financeCategories={financeCategories}
+              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList} notes={notes} noteFolders={noteFolders} financeEntries={financeEntries} financeCategories={financeCategories} dashboardWidgets={dashboardWidgets}
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
               persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
-              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables} persistShoppingList={persistShoppingList} persistNotes={persistNotes} persistNoteFolders={persistNoteFolders} persistFinanceEntries={persistFinanceEntries} persistFinanceCategories={persistFinanceCategories}
+              persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables} persistShoppingList={persistShoppingList} persistNotes={persistNotes} persistNoteFolders={persistNoteFolders} persistFinanceEntries={persistFinanceEntries} persistFinanceCategories={persistFinanceCategories} persistDashboardWidgets={persistDashboardWidgets}
               onAnthropicKeyChange={refreshCoachKey}
             />
           )}
