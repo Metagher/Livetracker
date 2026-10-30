@@ -86,7 +86,7 @@ import {
   LayoutDashboard, ListChecks, TrendingUp, Dumbbell, BookOpen, Brain,
   Droplet, Moon, Sun, Wine, Smartphone, Candy, Utensils, Music, Pen,
   Code, Heart, Pencil, Trash2, ChevronLeft, ChevronRight, Target,
-  CalendarDays, Award, Sparkles, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
+  CalendarDays, Award, TrendingDown, Bold, Italic, Underline, List, ClipboardList,
   Settings, Download, Upload, AlertTriangle, RefreshCw, Crown, Users, ShoppingCart, FileText, Folder, Wallet, PiggyBank, Link2,
   ChevronUp, ChevronDown, Wrench
 } from "lucide-react";
@@ -98,97 +98,113 @@ import ReactDOM from "react-dom/client";
 import * as XLSX from "xlsx";
 
 /* ============================================================
-   @section CONFIG — Supabase/Anthropic-Zugangsdaten (localStorage, pro Gerät)
-   STANDALONE-KONFIGURATION (Supabase + Anthropic API-Key)
-   Wird einmalig über den Setup-Screen abgefragt und lokal im
-   Browser (localStorage) auf DIESEM Gerät gespeichert. Diese
-   Werte selbst werden NICHT synchronisiert - nur die App-Daten.
+   @section CONFIG — Supabase-Projekt (fest im Code) + Session (localStorage, pro Gerät)
+   Projekt-URL und anon Key sind öffentliche, dafür vorgesehene
+   Zugangsdaten (siehe Supabase-Doku) - der eigentliche Zugriffsschutz
+   kommt aus der Anmeldung + Row Level Security (user_id = auth.uid()),
+   nicht aus der Geheimhaltung dieser beiden Werte.
    ============================================================ */
-const CONFIG_KEY = "lifetracker-config";
-// Entfernt versehentlich mit eingegebene /rest/v1-Pfade und trailing Slashes,
-// damit die App auch dann funktioniert, wenn die volle REST-URL statt nur
-// der Projekt-URL eingetragen wurde.
-function normalizeSupabaseUrl(url) {
-  if (!url) return url;
-  return url.trim().replace(/\/rest\/v1\/?.*$/i, "").replace(/\/+$/, "");
+const SUPABASE_URL = "https://wjsoeesgydwavqoqurjz.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indqc29lZXNneWR3YXZxb3F1cmp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ5ODQ2ODUsImV4cCI6MjEwMDU2MDY4NX0.vAG5nSLqMg8JG1jKj2NzO9cXM15IYm2UxhOL1Svnmfc";
+const SESSION_KEY = "lifetracker-session";
+
+function getSession() {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); } catch { return null; }
 }
-function getConfig() {
+// Normiert die Antwort von Supabase Auth (/token, /signup) auf das Format,
+// das wir lokal halten - inkl. absolutem Ablaufzeitpunkt statt nur "expires_in".
+function setSession(raw) {
+  if (!raw?.access_token) { clearSession(); return null; }
+  const session = {
+    access_token: raw.access_token,
+    refresh_token: raw.refresh_token,
+    expires_at: Date.now() + (raw.expires_in || 3600) * 1000,
+    user: { id: raw.user?.id, email: raw.user?.email },
+  };
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  return session;
+}
+function clearSession() {
+  localStorage.removeItem(SESSION_KEY);
+}
+async function refreshSession() {
+  const session = getSession();
+  if (!session?.refresh_token) return null;
   try {
-    const cfg = JSON.parse(localStorage.getItem(CONFIG_KEY) || "null");
-    if (cfg?.supabaseUrl) cfg.supabaseUrl = normalizeSupabaseUrl(cfg.supabaseUrl);
-    return cfg;
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: session.refresh_token }),
+    });
+    if (!res.ok) { clearSession(); return null; }
+    return setSession(await res.json());
   } catch { return null; }
-}
-function setConfig(cfg) {
-  const clean = { ...cfg, supabaseUrl: normalizeSupabaseUrl(cfg.supabaseUrl) };
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(clean));
-}
-function getAnthropicKey() {
-  return getConfig()?.anthropicKey || "";
 }
 
 /* ============================================================
    @section STORAGE-SHIM — window.storage-Ersatz über Supabase REST (KV-Tabelle)
    STORAGE-SHIM: ersetzt Claudes window.storage 1:1 durch
-   Aufrufe an eine Supabase-Tabelle "lifetracker_kv_store" (key/value/updated_at).
+   Aufrufe an eine Supabase-Tabelle "lifetracker_kv_store" (key/value/updated_at/user_id).
    Dieselbe Schnittstelle (get/set liefern {key, value}) wie zuvor,
-   damit der komplette App-Code unverändert bleibt.
+   damit der komplette App-Code unverändert bleibt. Der Zugriff ist über
+   Row Level Security auf den eingeloggten Nutzer beschränkt - supabaseFetch
+   schickt daher das Access-Token der Session statt des anon Keys als Bearer
+   und erneuert es bei Bedarf automatisch.
    ============================================================ */
+async function supabaseFetch(path, options = {}) {
+  let session = getSession();
+  if (!session) { window.location.reload(); throw new Error("Nicht angemeldet"); }
+  if (session.expires_at - Date.now() < 60000) session = await refreshSession();
+  if (!session) { window.location.reload(); throw new Error("Sitzung abgelaufen"); }
+
+  const doFetch = (accessToken) => fetch(`${SUPABASE_URL}${path}`, {
+    ...options,
+    headers: { ...options.headers, apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+  });
+
+  let res = await doFetch(session.access_token);
+  if (res.status === 401) {
+    session = await refreshSession();
+    if (!session) { window.location.reload(); throw new Error("Sitzung abgelaufen"); }
+    res = await doFetch(session.access_token);
+  }
+  return res;
+}
+
 function installStorageShim() {
   window.storage = {
     get: async (key) => {
-      const cfg = getConfig();
-      if (!cfg?.supabaseUrl || !cfg?.supabaseKey) throw new Error("Nicht konfiguriert");
-      const res = await fetch(
-        `${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store?key=eq.${encodeURIComponent(key)}&select=value`,
-        { headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}` } }
-      );
+      const res = await supabaseFetch(`/rest/v1/lifetracker_kv_store?key=eq.${encodeURIComponent(key)}&select=value`);
       if (!res.ok) throw new Error("Supabase-Fehler: " + res.status);
       const rows = await res.json();
       if (!rows.length) throw new Error("Kein Eintrag für " + key);
       return { key, value: rows[0].value, shared: false };
     },
     getMany: async (keys) => {
-      const cfg = getConfig();
-      if (!cfg?.supabaseUrl || !cfg?.supabaseKey) throw new Error("Nicht konfiguriert");
       const filter = keys.map((key) => encodeURIComponent(key)).join(",");
-      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store?key=in.(${filter})&select=key,value`, {
-        headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}` },
-      });
+      const res = await supabaseFetch(`/rest/v1/lifetracker_kv_store?key=in.(${filter})&select=key,value`);
       if (!res.ok) throw new Error("Supabase-Fehler: " + res.status);
       const rows = await res.json();
       return Object.fromEntries(rows.map((row) => [row.key, row.value]));
     },
     set: async (key, value) => {
-      const cfg = getConfig();
-      if (!cfg?.supabaseUrl || !cfg?.supabaseKey) throw new Error("Nicht konfiguriert");
-      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store`, {
+      const session = getSession();
+      const res = await supabaseFetch(`/rest/v1/lifetracker_kv_store`, {
         method: "POST",
-        headers: {
-          apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}`,
-          "Content-Type": "application/json",
-          Prefer: "resolution=merge-duplicates,return=representation",
-        },
-        body: JSON.stringify({ key, value, updated_at: new Date().toISOString() }),
+        headers: { "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify({ key, value, user_id: session?.user?.id, updated_at: new Date().toISOString() }),
       });
       if (!res.ok) throw new Error("Supabase-Fehler: " + res.status);
       const data = await res.json();
       return { key, value: data[0]?.value ?? value, shared: false };
     },
     delete: async (key) => {
-      const cfg = getConfig();
-      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store?key=eq.${encodeURIComponent(key)}`, {
-        method: "DELETE",
-        headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}` },
-      });
+      const res = await supabaseFetch(`/rest/v1/lifetracker_kv_store?key=eq.${encodeURIComponent(key)}`, { method: "DELETE" });
       return { key, deleted: res.ok, shared: false };
     },
     list: async (prefix) => {
-      const cfg = getConfig();
       const q = prefix ? `&key=like.${encodeURIComponent(prefix)}*` : "";
-      const res = await fetch(`${cfg.supabaseUrl}/rest/v1/lifetracker_kv_store?select=key${q}`, {
-        headers: { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}` },
-      });
+      const res = await supabaseFetch(`/rest/v1/lifetracker_kv_store?select=key${q}`);
       const rows = res.ok ? await res.json() : [];
       return { keys: rows.map((r) => r.key), prefix, shared: false };
     },
@@ -197,36 +213,37 @@ function installStorageShim() {
 installStorageShim();
 
 /* ============================================================
-   @section SETUP-GATE — Einmaliger Einrichtungsscreen vor App-Start
-   SETUP-SCREEN: fragt Supabase- und Anthropic-Zugangsdaten ab,
-   bevor die eigentliche App startet.
+   @section LOGIN-GATE — Anmeldescreen vor App-Start
+   Zeigt eine einfache Email/Passwort-Anmeldung (Supabase Auth), solange
+   keine gültige Sitzung vorliegt. Keine Registrierung in der App - das
+   Konto existiert bereits im Supabase-Projekt.
    ============================================================ */
-function SetupGate({ children }) {
-  const [cfg, setCfgState] = useState(() => getConfig());
-  const [supabaseUrl, setSupabaseUrl] = useState(cfg?.supabaseUrl || "");
-  const [supabaseKey, setSupabaseKey] = useState(cfg?.supabaseKey || "");
-  const [anthropicKey, setAnthropicKey] = useState(cfg?.anthropicKey || "");
-  const [testErr, setTestErr] = useState(null);
-  const [testing, setTesting] = useState(false);
+function LoginGate({ children }) {
+  const [session, setSessionState] = useState(() => getSession());
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  if (cfg?.supabaseUrl && cfg?.supabaseKey) return children;
+  if (session?.access_token) return children;
 
-  const save = async () => {
-    setTesting(true);
-    setTestErr(null);
+  const login = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
     try {
-      const cleanUrl = normalizeSupabaseUrl(supabaseUrl);
-      const res = await fetch(`${cleanUrl}/rest/v1/lifetracker_kv_store?select=key&limit=1`, {
-        headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
       });
-      if (!res.ok) throw new Error("Verbindung fehlgeschlagen (" + res.status + "). Prüfe URL/Key und ob die Tabelle lifetracker_kv_store existiert.");
-      const next = { supabaseUrl: cleanUrl, supabaseKey, anthropicKey };
-      setConfig(next);
-      setCfgState(next);
-    } catch (e) {
-      setTestErr(e.message || "Verbindung fehlgeschlagen.");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error_description || data.msg || "Anmeldung fehlgeschlagen.");
+      setSessionState(setSession(data));
+    } catch (err) {
+      setError(err.message || "Anmeldung fehlgeschlagen.");
     } finally {
-      setTesting(false);
+      setLoading(false);
     }
   };
 
@@ -235,42 +252,30 @@ function SetupGate({ children }) {
       minHeight: "100vh", background: "#15161B", color: "#F1EFE9", display: "flex",
       alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "Inter, sans-serif",
     }}>
-      <div style={{ maxWidth: 440, width: "100%", background: "#1E2027", border: "1px solid #31333D", borderRadius: 18, padding: 26 }}>
-        <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, marginBottom: 6 }}>Lifetracker einrichten</h1>
+      <form onSubmit={login} style={{ maxWidth: 380, width: "100%", background: "#1E2027", border: "1px solid #31333D", borderRadius: 18, padding: 26 }}>
+        <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, marginBottom: 6 }}>Anmelden</h1>
         <p style={{ fontSize: 13, color: "#93949F", lineHeight: 1.6, marginBottom: 20 }}>
-          Einmalige Einrichtung auf diesem Gerät. Trage deine Supabase-Zugangsdaten ein (für die Cloud-Synchronisation über alle Geräte)
-          und optional deinen Anthropic API-Key (für den KI-Coach).
+          Lifetracker ist nur für dich - melde dich mit deinem Account an.
         </p>
 
-        <label style={{ fontSize: 11.5, fontWeight: 600, color: "#93949F", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 6 }}>Supabase-Projekt-URL</label>
-        <input value={supabaseUrl} onChange={(e) => setSupabaseUrl(e.target.value)} placeholder="https://xxxxx.supabase.co"
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #31333D", background: "#15161B", color: "#F1EFE9", fontSize: 13.5, marginBottom: 6 }} />
-        <div style={{ fontSize: 11, color: "#5B5D68", marginBottom: 14 }}>Nur die Basis-URL, ohne "/rest/v1" am Ende (wird automatisch ergänzt).</div>
+        <label style={{ fontSize: 11.5, fontWeight: 600, color: "#93949F", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 6 }}>Email</label>
+        <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="username" autoFocus
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #31333D", background: "#15161B", color: "#F1EFE9", fontSize: 13.5, marginBottom: 14, boxSizing: "border-box" }} />
 
-        <label style={{ fontSize: 11.5, fontWeight: 600, color: "#93949F", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 6 }}>Supabase anon Public Key</label>
-        <input value={supabaseKey} onChange={(e) => setSupabaseKey(e.target.value)} placeholder="eyJhbGciOi..." type="password"
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #31333D", background: "#15161B", color: "#F1EFE9", fontSize: 13.5, marginBottom: 14 }} />
+        <label style={{ fontSize: 11.5, fontWeight: 600, color: "#93949F", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 6 }}>Passwort</label>
+        <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="current-password"
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #31333D", background: "#15161B", color: "#F1EFE9", fontSize: 13.5, marginBottom: 18, boxSizing: "border-box" }} />
 
-        <label style={{ fontSize: 11.5, fontWeight: 600, color: "#93949F", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 6 }}>Anthropic API-Key (optional, für den Coach)</label>
-        <input value={anthropicKey} onChange={(e) => setAnthropicKey(e.target.value)} placeholder="sk-ant-..." type="password"
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 9, border: "1px solid #31333D", background: "#15161B", color: "#F1EFE9", fontSize: 13.5, marginBottom: 18 }} />
+        {error && <div style={{ color: "#FF6F91", fontSize: 12.5, marginBottom: 14 }}>{error}</div>}
 
-        {testErr && <div style={{ color: "#FF6F91", fontSize: 12.5, marginBottom: 14 }}>{testErr}</div>}
-
-        <button onClick={save} disabled={testing || !supabaseUrl || !supabaseKey} style={{
+        <button type="submit" disabled={loading || !email || !password} style={{
           width: "100%", padding: "11px 0", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 14,
           background: "linear-gradient(135deg, #FF7A45, #FFC15E)", color: "#1A1305",
-          cursor: testing ? "not-allowed" : "pointer", opacity: testing || !supabaseUrl || !supabaseKey ? 0.6 : 1,
+          cursor: loading ? "not-allowed" : "pointer", opacity: loading || !email || !password ? 0.6 : 1,
         }}>
-          {testing ? "Verbinde …" : "Verbindung testen & speichern"}
+          {loading ? "Meldet an …" : "Anmelden"}
         </button>
-
-        <p style={{ fontSize: 11.5, color: "#5B5D68", marginTop: 16, lineHeight: 1.6 }}>
-          Anleitung: supabase.com → kostenloses Projekt anlegen → SQL-Editor → Tabelle "lifetracker_kv_store" mit Spalten
-          key (text, primary key), value (text), updated_at (timestamptz) anlegen → Row Level Security für diese Tabelle
-          deaktivieren (nur für den Eigengebrauch!) → URL und "anon public" Key aus Project Settings → API hier eintragen.
-        </p>
-      </div>
+      </form>
     </div>
   );
 }
@@ -673,9 +678,7 @@ function useLifeOSData() {
   const [habits, setHabits] = useState([]);
   const [entries, setEntries] = useState({});
   const [achievements, setAchievements] = useState([]);
-  const [coach, setCoach] = useState(null);
   const [journal, setJournal] = useState({});
-  const [weeklyReports, setWeeklyReports] = useState({});
   const [goals, setGoals] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [persons, setPersons] = useState([]);
@@ -707,14 +710,12 @@ function useLifeOSData() {
   const loadAll = useCallback(async ({ silent } = {}) => {
     if (silent) setRefreshing(true);
     try {
-      const keys = ["los-habits", "los-entries", "los-achievements", "los-coach", "los-journal", "los-weekly-reports", "los-goals", "los-tasks", "los-persons", "los-categories", "los-person-groups", "los-moods", "los-consumables", "los-shopping-list", "los-notes", "los-note-folders", "los-finance-entries", "los-finance-categories", "los-dashboard-widgets"];
+      const keys = ["los-habits", "los-entries", "los-achievements", "los-journal", "los-goals", "los-tasks", "los-persons", "los-categories", "los-person-groups", "los-moods", "los-consumables", "los-shopping-list", "los-notes", "los-note-folders", "los-finance-entries", "los-finance-categories", "los-dashboard-widgets"];
       const stored = await window.storage.getMany(keys);
       setHabits(readStoredJSON(stored, "los-habits", []));
       setEntries(readStoredJSON(stored, "los-entries", {}));
       setAchievements(readStoredJSON(stored, "los-achievements", []));
-      setCoach(readStoredJSON(stored, "los-coach", null));
       setJournal(readStoredJSON(stored, "los-journal", {}));
-      setWeeklyReports(readStoredJSON(stored, "los-weekly-reports", {}));
       setGoals(readStoredJSON(stored, "los-goals", []));
       setTasks(readStoredJSON(stored, "los-tasks", []));
       setPersons(readStoredJSON(stored, "los-persons", []));
@@ -756,17 +757,9 @@ function useLifeOSData() {
     setAchievements(next);
     await enqueueWrite("los-achievements", next);
   }, [enqueueWrite]);
-  const persistCoach = useCallback(async (next) => {
-    setCoach(next);
-    await enqueueWrite("los-coach", next);
-  }, [enqueueWrite]);
   const persistJournal = useCallback(async (next) => {
     setJournal(next);
     await enqueueWrite("los-journal", next);
-  }, [enqueueWrite]);
-  const persistWeeklyReports = useCallback(async (next) => {
-    setWeeklyReports(next);
-    await enqueueWrite("los-weekly-reports", next);
   }, [enqueueWrite]);
   const persistGoals = useCallback(async (next) => {
     setGoals(next);
@@ -822,8 +815,8 @@ function useLifeOSData() {
   }, [enqueueWrite]);
 
   return {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
+    habits, entries, achievements, journal, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistJournal, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
     refresh,
   };
 }
@@ -960,7 +953,7 @@ function HabitModal({ initial, onClose, onSave, onDelete, goals, categories, onA
         <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="z. B. Sport, Kein Alkohol …" autoFocus />
 
         <label style={labelStyle}>Beschreibung (optional)</label>
-        <input style={inputStyle} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Was bedeutet dir dieses Habit? (dein Coach nutzt das)" />
+        <input style={inputStyle} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Was bedeutet dir dieses Habit?" />
 
         <label style={labelStyle}>Kategorie (optional)</label>
         <div style={{ marginBottom: 14 }}>
@@ -2278,7 +2271,7 @@ function MiniStat({ label, value, unit }) {
 }
 
 /* ============================================================
-   @section DASHBOARD — Startseite: Punkte, Coach-Teaser, Geburtstage, Aufgaben, Habits
+   @section DASHBOARD — Startseite: Punkte, Geburtstage, Aufgaben, Habits
    ============================================================ */
 function motivationLine(active, entries, allStats, dateKey = todayKey()) {
   const done = active.filter((h) => dayStatus(h, entries, dateKey) === "success").length;
@@ -2292,7 +2285,7 @@ function motivationLine(active, entries, allStats, dateKey = todayKey()) {
 }
 
 function Dashboard({
-  habits, entries, onToggle, onOpenDetail, onEdit, onCreate, celebrateId, coach, onOpenCoach, hasCoach,
+  habits, entries, onToggle, onOpenDetail, onEdit, onCreate, celebrateId,
   goals, tasks, persons, persistTasks, onOpenTasks, moods, persistMoods, onOpenMood, allStats, statsByHabitId, isMobile, currentDateKey,
 }) {
   const active = habits;
@@ -2341,30 +2334,6 @@ function Dashboard({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><SectionLabel>Wie geht es dir heute?</SectionLabel><button onClick={onOpenMood} style={{ ...ghostBtn, padding: "5px 9px", fontSize: 10.5 }}>Zum Verlauf</button></div>
         <MoodInput dateKey={currentDateKey} moods={moods} persistMoods={persistMoods} compact />
       </div>
-
-      {hasCoach && coach?.quote && (
-        <button onClick={onOpenCoach} style={{
-          display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", cursor: "pointer",
-          background: `linear-gradient(135deg, ${COLORS.violet}14, ${COLORS.ember1}0a)`,
-          border: `1px solid ${COLORS.violet}33`, borderRadius: 14, padding: "12px 14px", marginBottom: 24,
-        }}>
-          <div style={{
-            width: 26, height: 26, borderRadius: 8, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-            background: `linear-gradient(135deg, ${COLORS.violet}, ${COLORS.ember1})`,
-          }}>
-            <Brain size={13} style={{ color: "#fff" }} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.violet, marginBottom: 2, letterSpacing: "0.03em" }}>DEIN COACH</div>
-            <div style={{
-              fontFamily: "Fraunces, serif", fontStyle: "italic", fontSize: 14.5, color: COLORS.text,
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            }}>
-              „{coach.quote}"
-            </div>
-          </div>
-        </button>
-      )}
 
       {upcomingBirthdays.length > 0 && (
         <div style={{
@@ -3638,312 +3607,9 @@ function MyDashboardPage({
 }
 
 /* ============================================================
-   @section COACH — Gesamtanalyse via Anthropic API (fetchCoachAnalysis, CoachPage). Tages-/Wochenfeedback siehe @section JOURNAL.
-   KI-COACH
-   Fasst die aktuelle Habit-Situation zusammen und lässt Claude
-   eine kurze, ehrliche und motivierende Einschätzung schreiben.
-   ============================================================ */
-function buildCoachSummary(habits, entries, goals, tasks, journal) {
-  const active = habits;
-  const today = todayKey();
-  const allStats = active.map((h) => ({ h, s: simulateHabit(h, entries, today) }));
-
-  const openToday = active.filter((h) => dayStatus(h, entries, today) !== "success").length;
-
-  const lines = allStats.map(({ h, s }) => {
-    const streakInfo = s.currentStreak > 0
-      ? `positive Streak: ${s.currentStreak} Tage (längste: ${s.longestStreak})`
-      : s.currentNegStreak > 0
-        ? `NEGATIVE Streak: ${s.currentNegStreak} Tage in Folge nicht erfüllt`
-        : "aktuell keine Streak";
-    const linkedTitles = (h.goalIds || []).map((gid) => (goals || []).find((g) => g.id === gid)?.title).filter(Boolean);
-    const goalLink = linkedTitles.length > 0 ? `, zahlt ein auf Ziel(e): ${linkedTitles.map((t) => `"${t}"`).join(", ")}` : "";
-    return `- "${h.name}"${h.description ? ` — was es für die Person bedeutet: "${h.description}"` : ""}: ${streakInfo}, Erfolgsquote ${s.successRate}%, heute ${dayStatus(h, entries, today) === "success" ? "bereits erfüllt" : "noch offen"}${goalLink}`;
-  }).join("\n");
-
-  const goalLines = (goals || []).map((g) =>
-    `- "${g.title}"${g.description ? ` — ${g.description}` : ""} [${g.achieved ? "bereits erreicht" : "noch offen"}, ${g.points} Punkte bei Erfüllung]`
-  ).join("\n");
-
-  const openTasks = (tasks || []).filter((t) => !t.completed);
-  const completedTasksCount = (tasks || []).filter((t) => t.completed).length;
-  const taskLines = openTasks.map((t) =>
-    `- "${t.title}"${t.category ? ` [${t.category}]` : ""}${t.dueDate ? `, fällig am ${shortDate(t.dueDate)}` : ""}, ${t.points} Punkte bei Erledigung`
-  ).join("\n");
-
-  const last7 = Array.from({ length: 7 }, (_, i) => toKey(addDays(new Date(), -i)));
-  const journalLines = last7
-    .map((k) => { const text = stripHtml(journal?.[k]?.text); return text ? `${longDate(k)}: ${text}` : null; })
-    .filter(Boolean).join("\n");
-
-  return `Aktive Habits (${active.length}), heute noch ${openToday} offen:\n${lines || "(noch keine Habits angelegt)"}\n\nLangfristige Ziele der Person:\n${goalLines || "(noch keine Ziele angelegt)"}\n\nOffene Aufgaben (${openTasks.length}, ${completedTasksCount} bereits erledigt):\n${taskLines || "(keine offenen Aufgaben)"}\n\nJournal-Notizen der letzten 7 Tage:\n${journalLines || "(keine Journal-Einträge in den letzten 7 Tagen)"}`;
-}
-
-const COACH_SYSTEM_PROMPT = `Du bist der eingebaute KI-Coach einer persönlichen Habit-Tracking-App ("Lifetracker"). Das übergeordnete Ziel der Person, dem alles andere untergeordnet ist, lautet: ein besserer Mensch werden. Du bekommst eine vollständige Datenzusammenfassung: die Habits (inklusive der Beschreibung, die die Person selbst hinterlegt hat und die erklärt, was das jeweilige Habit für sie bedeutet), ihre langfristigen Ziele (Goals), ihre offenen und erledigten Aufgaben (Tasks), sowie ihre Journal-Notizen der letzten Tage. Nutze all diese Quellen gemeinsam, um ein möglichst vollständiges Bild der aktuellen Situation der Person zu bekommen.
-
-Nutze die Beschreibung jedes Habits, um zu verstehen, wofür es im Leben der Person eigentlich steht (z. B. Disziplin, Gesundheit, Beziehungen, Ruhe, Wachstum), und sprich in deiner Einschätzung genau DAS an - was es für die Person bedeutet, dieses Habit erfüllt oder nicht erfüllt zu haben, bezogen auf das Ziel, ein besserer Mensch zu werden. Punkte und Streak-Zahlen sind nur ein Hilfsmittel im Hintergrund, nicht die eigentliche Botschaft - vermeide es, dich in Zahlen zu verlieren.
-
-Setze außerdem, wenn Ziele vorhanden sind, die Habits in Bezug zu diesen langfristigen Zielen: welche Habits bringen die Person ihren Zielen näher, und was müsste sie konkret tun, um ihre Ziele zu erreichen? Beziehe offene Aufgaben und auffällige Punkte aus den Journal-Notizen mit ein, wenn sie für die Einschätzung relevant sind.
-
-Antworte AUSSCHLIESSLICH mit einem JSON-Objekt (kein Markdown-Codeblock, kein einleitender Text, keine Erklärung) exakt im Format {"analysis": "...", "quote": "..."}.
-
-"analysis": eine kurze, ehrliche und motivierende Einschätzung auf Deutsch (max. 130 Wörter, Fließtext, keine Überschriften, keine Einleitung wie "Klar" oder "Hier ist"). Sprich die Person direkt mit "du" an. Gehe inhaltlich auf die Bedeutung der Habits ein statt auf reine Zahlen, beziehe wenn möglich die Ziele, offenen Aufgaben und Journal-Notizen der Person mit ein, und gib zum Schluss einen konkreten, handlungsorientierten Ansporn für heute. Kein Smalltalk, keine Emojis, kein Fazit-Absatz.
-
-"quote": ein einzelner, kurzer und einprägsamer Motivationsspruch auf Deutsch (max. 12 Wörter), passend zur aktuellen Situation und zum übergeordneten Ziel, ein besserer Mensch zu werden. Ohne Anführungszeichen, ohne Emoji, kein Fließtext, wie ein Spruch auf einer Trainingskarte.`;
-
-async function fetchCoachAnalysis(summary) {
-  const anthropicKey = getAnthropicKey();
-  if (!anthropicKey) throw new Error("Kein Anthropic API-Key hinterlegt (siehe Einstellungen).");
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 500,
-      system: COACH_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: summary }],
-    }),
-  });
-  if (!response.ok) throw new Error("API-Fehler " + response.status);
-  const data = await response.json();
-  const raw = (data.content || [])
-    .filter((c) => c.type === "text")
-    .map((c) => c.text)
-    .join("\n")
-    .trim();
-  if (!raw) throw new Error("Leere Antwort");
-  const cleaned = raw.replace(/```json|```/g, "").trim();
-  let analysis = cleaned;
-  let quote = "";
-  try {
-    const parsed = JSON.parse(cleaned);
-    analysis = (parsed.analysis || "").trim();
-    quote = (parsed.quote || "").trim();
-  } catch {
-    // Fallback, falls kein valides JSON zurückkam: ganzen Text als Analyse verwenden
-  }
-  if (!analysis) throw new Error("Leere Antwort");
-  return { analysis, quote };
-}
-
-function CoachPage({ habits, entries, coach, persistCoach, goals, tasks, journal, weeklyReports, persistWeeklyReports, statsByHabitId }) {
-  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
-  const [err, setErr] = useState(null);
-  const active = habits;
-
-  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
-  const [loadingReport, setLoadingReport] = useState(false);
-  const [reportErr, setReportErr] = useState(null);
-
-  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => toKey(addDays(weekStart, i))), [weekStart]);
-  const isCurrentWeek = toKey(startOfWeek(new Date())) === toKey(weekStart);
-  const weekMonthYearLabel = keyToDate(weekDays[0]).toLocaleDateString("de-DE", { month: "long", year: "numeric" });
-  const weekNum = isoWeekNumber(keyToDate(weekDays[0]));
-  const weekKey = toKey(weekStart);
-  const weekReport = (weeklyReports || {})[weekKey];
-
-  const perHabitDailyMap = useMemo(() => habits.map((h) => {
-    const s = statsByHabitId[h.id];
-    return { habit: h, stats: s, map: Object.fromEntries(s.daily.map((d) => [d.date, d])) };
-  }), [habits, statsByHabitId]);
-
-  const runAnalysis = async () => {
-    setLoadingAnalysis(true);
-    setErr(null);
-    try {
-      const summary = buildCoachSummary(habits, entries, goals, tasks, journal);
-      const { analysis, quote } = await fetchCoachAnalysis(summary);
-      persistCoach({ text: analysis, quote, generatedAt: new Date().toISOString() });
-    } catch (e) {
-      setErr("Die Analyse konnte gerade nicht geladen werden. Versuch es gleich noch einmal.");
-    } finally {
-      setLoadingAnalysis(false);
-    }
-  };
-
-  const runWeeklyReport = async () => {
-    setLoadingReport(true);
-    setReportErr(null);
-    try {
-      const tasksForWeek = (tasks || []).filter((t) => t.dueDate && weekDays.includes(t.dueDate));
-      const summary = buildWeekSummary(weekDays, perHabitDailyMap, journal || {}, goals, tasksForWeek);
-      const report = await fetchWeeklyReport(summary);
-      const next = { ...(weeklyReports || {}), [weekKey]: { text: report, generatedAt: new Date().toISOString(), weekStart: weekKey, weekEnd: weekDays[6] } };
-      persistWeeklyReports(next);
-    } catch (e) {
-      setReportErr("Der Wochenbericht konnte gerade nicht erstellt werden. Versuch es gleich noch einmal.");
-    } finally {
-      setLoadingReport(false);
-    }
-  };
-
-  const generatedLabel = coach?.generatedAt
-    ? new Date(coach.generatedAt).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
-    : null;
-
-  return (
-    <div>
-      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, marginBottom: 6 }}>Coach</h1>
-      <p style={{ color: COLORS.textMuted, fontSize: 13.5, marginBottom: 20 }}>
-        Dein Coach schaut sich deine aktuellen Streaks und Punkte an und sagt dir ehrlich, wo du stehst.
-      </p>
-
-      <div style={{
-        background: `linear-gradient(160deg, ${COLORS.surface}, ${COLORS.bgSoft})`,
-        border: `1px solid ${COLORS.borderSoft}`, borderRadius: 18, padding: 22, marginBottom: 16,
-        position: "relative", overflow: "hidden",
-      }}>
-        <div style={{
-          position: "absolute", top: -40, right: -40, width: 140, height: 140, borderRadius: "50%",
-          background: `radial-gradient(circle, ${COLORS.ember1}22, transparent 70%)`,
-        }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, position: "relative" }}>
-          <div style={{
-            width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
-            background: `linear-gradient(135deg, ${COLORS.violet}, ${COLORS.ember1})`,
-          }}>
-            <Brain size={18} style={{ color: "#fff" }} />
-          </div>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: 14.5 }}>Dein Coach</div>
-            {generatedLabel && <div style={{ fontSize: 11, color: COLORS.textFaint }}>Analyse vom {generatedLabel} Uhr</div>}
-          </div>
-        </div>
-
-        {active.length === 0 ? (
-          <div style={{ color: COLORS.textMuted, fontSize: 14, lineHeight: 1.6, position: "relative" }}>
-            Leg zuerst ein paar Habits an – dann kann ich dir sagen, wo du stehst und was als Nächstes dran ist.
-          </div>
-        ) : loadingAnalysis ? (
-          <div style={{ color: COLORS.textMuted, fontSize: 14, display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
-            <Sparkles size={15} style={{ color: COLORS.ember2 }} />
-            Analysiert deine Situation …
-          </div>
-        ) : coach?.text ? (
-          <div style={{ position: "relative" }}>
-            {coach.quote && (
-              <div style={{
-                fontFamily: "Fraunces, serif", fontStyle: "italic", fontSize: 17, lineHeight: 1.4,
-                color: COLORS.ember2, marginBottom: 12, paddingLeft: 12, borderLeft: `2px solid ${COLORS.ember1}`,
-              }}>
-                „{coach.quote}"
-              </div>
-            )}
-            <p style={{ fontSize: 14.5, lineHeight: 1.7, color: COLORS.text, whiteSpace: "pre-wrap", margin: 0 }}>{coach.text}</p>
-          </div>
-        ) : (
-          <div style={{ color: COLORS.textMuted, fontSize: 14, lineHeight: 1.6, position: "relative" }}>
-            Noch keine Analyse vorhanden. Starte deine erste Einschätzung.
-          </div>
-        )}
-
-        {err && <div style={{ color: COLORS.coral, fontSize: 12.5, marginTop: 10, position: "relative" }}>{err}</div>}
-
-        {active.length > 0 && (
-          <button onClick={runAnalysis} disabled={loadingAnalysis} style={{
-            ...primaryBtn, marginTop: 16, display: "flex", alignItems: "center", gap: 7, position: "relative",
-            opacity: loadingAnalysis ? 0.6 : 1, cursor: loadingAnalysis ? "not-allowed" : "pointer",
-          }}>
-            <Sparkles size={14} /> {coach?.text ? "Neu analysieren" : "Analyse starten"}
-          </button>
-        )}
-      </div>
-
-      <div style={{
-        background: `linear-gradient(160deg, ${COLORS.surface}, ${COLORS.bgSoft})`,
-        border: `1px solid ${COLORS.borderSoft}`, borderRadius: 16, padding: 18, marginBottom: 16,
-      }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-            <div style={{
-              width: 28, height: 28, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center",
-              background: `linear-gradient(135deg, ${COLORS.violet}, ${COLORS.ember1})`,
-            }}>
-              <Brain size={14} style={{ color: "#fff" }} />
-            </div>
-            <span style={{ fontWeight: 700, fontSize: 13.5 }}>Wochenbericht</span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <IconButton onClick={() => setWeekStart(addDays(weekStart, -7))} title="Vorherige Woche"><ChevronLeft size={14} /></IconButton>
-            <span style={{ fontSize: 11.5, fontWeight: 600, color: COLORS.textMuted, minWidth: 150, textAlign: "center", fontFamily: "JetBrains Mono, monospace", textTransform: "capitalize" }}>
-              {weekMonthYearLabel} · KW {weekNum}
-            </span>
-            <IconButton onClick={() => setWeekStart(addDays(weekStart, 7))} title="Nächste Woche"><ChevronRight size={14} /></IconButton>
-            {!isCurrentWeek && (
-              <button onClick={() => setWeekStart(startOfWeek(new Date()))} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 11.5 }}>Heute</button>
-            )}
-          </div>
-        </div>
-
-        {loadingReport ? (
-          <div style={{ color: COLORS.textMuted, fontSize: 13.5, display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-            <Sparkles size={14} style={{ color: COLORS.ember2 }} /> Erstellt deinen Wochenbericht …
-          </div>
-        ) : weekReport?.text ? (
-          <>
-            <div style={{ fontSize: 11, color: COLORS.textFaint, marginBottom: 8 }}>
-              Erstellt am {new Date(weekReport.generatedAt).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })} Uhr
-            </div>
-            <p style={{ fontSize: 13.5, lineHeight: 1.65, color: COLORS.text, whiteSpace: "pre-wrap", margin: 0, marginBottom: 12 }}>{weekReport.text}</p>
-          </>
-        ) : (
-          <div style={{ color: COLORS.textMuted, fontSize: 13, marginBottom: 12 }}>
-            Noch kein Bericht für diese Woche (KW {weekNum}).
-          </div>
-        )}
-
-        {reportErr && <div style={{ color: COLORS.coral, fontSize: 12, marginBottom: 8 }}>{reportErr}</div>}
-
-        <button onClick={runWeeklyReport} disabled={loadingReport} style={{
-          ...primaryBtn, display: "flex", alignItems: "center", gap: 7,
-          opacity: loadingReport ? 0.6 : 1, cursor: loadingReport ? "not-allowed" : "pointer",
-        }}>
-          <Sparkles size={13} /> {weekReport?.text ? "Bericht neu erstellen" : "Wochenbericht erstellen"}
-        </button>
-      </div>
-
-      {active.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <SectionLabel>Deine Ausgangslage</SectionLabel>
-          {perHabitDailyMap.map(({ habit: h, stats: s }) => {
-            const Icon = iconFor(h.icon);
-            return (
-              <div key={h.id} style={{
-                display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-                background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 12,
-              }}>
-                <Icon size={16} style={{ color: h.color, flexShrink: 0 }} />
-                <span style={{ flex: 1, fontSize: 13.5, fontWeight: 500 }}>{h.name}</span>
-                {s.currentStreak > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12, color: COLORS.ember2, fontFamily: "JetBrains Mono, monospace" }}>
-                    <Flame size={12} style={{ color: COLORS.ember1 }} />{s.currentStreak}
-                  </span>
-                )}
-                {s.currentNegStreak > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12, color: COLORS.coral, fontFamily: "JetBrains Mono, monospace" }}>
-                    <TrendingDown size={12} />{s.currentNegStreak}
-                  </span>
-                )}
-                <span style={{ fontSize: 11.5, color: COLORS.textFaint, fontFamily: "JetBrains Mono, monospace", minWidth: 40, textAlign: "right" }}>{s.successRate}%</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
-   @section JOURNAL — Tagebuch (RTF), Tages-Feedback + Wochenbericht via Anthropic API
+   @section JOURNAL — Tagebuch (RTF)
    JOURNAL
-   Tageseintrag mit Habit-Zusammenfassung, Freitext (RTF) und
-   optionalem Tages-Feedback vom KI-Coach.
+   Tageseintrag mit Habit-Zusammenfassung und Freitext (RTF).
    ============================================================ */
 function stripHtml(html) {
   if (!html) return "";
@@ -3952,131 +3618,6 @@ function stripHtml(html) {
   tmp.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
   tmp.querySelectorAll("p, div, li").forEach((el) => el.append("\n"));
   return (tmp.textContent || tmp.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function buildDaySummary(dateKey, habitRows, journalHtml, goals, tasksForDay) {
-  const lines = habitRows.map(({ habit, entry }) => {
-    const linkedTitles = (habit.goalIds || []).map((gid) => (goals || []).find((g) => g.id === gid)?.title).filter(Boolean);
-    const goalLink = linkedTitles.length > 0 ? `, zahlt ein auf Ziel(e): ${linkedTitles.map((t) => `"${t}"`).join(", ")}` : "";
-    const statusText = entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : entry.status === "skip" ? "bewusst übersprungen (z. B. Urlaub) - zählt nicht negativ" : "kein Eintrag";
-    return `- "${habit.name}"${habit.description ? ` — Bedeutung für die Person: "${habit.description}"` : ""}: ${statusText}${goalLink}`;
-  }).join("\n");
-  const journalText = stripHtml(journalHtml);
-  const goalLines = (goals || []).map((g) =>
-    `- "${g.title}"${g.description ? ` — ${g.description}` : ""} [${g.achieved ? "bereits erreicht" : "noch offen"}]`
-  ).join("\n");
-  const taskLines = (tasksForDay || []).map((t) =>
-    `- "${t.title}"${t.category ? ` [${t.category}]` : ""}: ${t.completed ? "erledigt" : "offen"}`
-  ).join("\n");
-  return `Datum: ${longDate(dateKey)}\nHabits an diesem Tag:\n${lines || "(keine aktiven Habits)"}${journalText ? `\n\nTagebucheintrag der Person zu diesem Tag:\n${journalText}` : "\n\n(Kein Tagebucheintrag vorhanden.)"}\n\nLangfristige Ziele der Person:\n${goalLines || "(noch keine Ziele angelegt)"}\n\nAufgaben mit Termin an diesem Tag:\n${taskLines || "(keine Aufgaben mit Termin an diesem Tag)"}`;
-}
-
-const DAILY_COACH_SYSTEM_PROMPT = `Du bist der eingebaute KI-Coach einer Habit-Tracking-App ("Lifetracker"). Das übergeordnete Ziel der Person lautet: ein besserer Mensch werden. Du bekommst die Habit-Ergebnisse eines einzelnen Tages (inklusive der Beschreibung, was jedes Habit der Person bedeutet), ggf. einen Tagebucheintrag zu diesem Tag, ihre langfristigen Ziele (Goals) sowie ihre Aufgaben (Tasks) mit Termin an diesem Tag. Antworte AUSSCHLIESSLICH mit einem JSON-Objekt (kein Markdown-Codeblock, kein einleitender Text) exakt im Format {"feedback": "..."}. "feedback": ein kurzes, ehrliches und motivierendes Feedback zu genau diesem einen Tag auf Deutsch (max. 90 Wörter, Fließtext, sprich die Person mit "du" an, keine Einleitung wie "Klar" oder "Hier ist"). Konzentriere dich darauf, was das Erfüllen oder Nicht-Erfüllen der Habits an diesem Tag für die Person bedeutet - bezogen auf die Bedeutung, die sie dem Habit selbst gegeben hat, und auf ihre langfristigen Ziele - statt auf Punktzahlen einzugehen. Geh, wenn ein Tagebucheintrag vorhanden ist, konkret darauf ein, und erwähne offene Aufgaben, wenn sie relevant sind. Kein Smalltalk, keine Emojis.`;
-
-async function fetchDailyFeedback(summary) {
-  const anthropicKey = getAnthropicKey();
-  if (!anthropicKey) throw new Error("Kein Anthropic API-Key hinterlegt (siehe Einstellungen).");
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 400,
-      system: DAILY_COACH_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: summary }],
-    }),
-  });
-  if (!response.ok) throw new Error("API-Fehler " + response.status);
-  const data = await response.json();
-  const raw = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n").trim();
-  if (!raw) throw new Error("Leere Antwort");
-  const cleaned = raw.replace(/```json|```/g, "").trim();
-  let feedback = cleaned;
-  try {
-    const parsed = JSON.parse(cleaned);
-    feedback = (parsed.feedback || "").trim();
-  } catch {
-    // Fallback: Rohtext verwenden, falls kein valides JSON zurückkam
-  }
-  if (!feedback) throw new Error("Leere Antwort");
-  return feedback;
-}
-
-// Baut eine Wochenzusammenfassung (pro Habit + pro Tag inkl. Tagebuch) für den Wochenbericht
-function buildWeekSummary(weekDays, perHabitDailyMap, journal, goals, tasksForWeek) {
-  const habitTotals = perHabitDailyMap.map(({ habit, map }) => {
-    const weekEntries = weekDays.map((k) => map[k]).filter(Boolean);
-    const successCount = weekEntries.filter((e) => e.status === "success").length;
-    return { habit, successCount, tracked: weekEntries.length };
-  }).filter((h) => h.tracked > 0);
-
-  const habitLines = habitTotals
-    .map((h) => {
-      const linkedTitles = (h.habit.goalIds || []).map((gid) => (goals || []).find((g) => g.id === gid)?.title).filter(Boolean);
-      const goalLink = linkedTitles.length > 0 ? `, zahlt ein auf Ziel(e): ${linkedTitles.map((t) => `"${t}"`).join(", ")}` : "";
-      return `- "${h.habit.name}"${h.habit.description ? ` — Bedeutung für die Person: "${h.habit.description}"` : ""}: ${h.successCount}/${h.tracked} Tage erfüllt${goalLink}`;
-    })
-    .join("\n");
-
-  const dayLines = weekDays.map((k) => {
-    const rows = perHabitDailyMap.map(({ habit, map }) => ({ habit, entry: map[k] })).filter(({ entry }) => entry !== undefined);
-    const habitLine = rows.map(({ habit, entry }) =>
-      `${habit.name}: ${entry.status === "success" ? "erfüllt" : entry.status === "fail" ? "nicht erfüllt" : entry.status === "skip" ? "übersprungen (Urlaub)" : "offen"}`
-    ).join(", ");
-    const journalText = stripHtml(journal[k]?.text);
-    return `${longDate(k)}${habitLine ? ` — ${habitLine}` : ""}${journalText ? `\nTagebuch: ${journalText}` : ""}`;
-  }).join("\n\n");
-
-  const goalLines = (goals || []).map((g) =>
-    `- "${g.title}"${g.description ? ` — ${g.description}` : ""} [${g.achieved ? "bereits erreicht" : "noch offen"}]`
-  ).join("\n");
-
-  const taskLines = (tasksForWeek || []).map((t) =>
-    `- "${t.title}"${t.category ? ` [${t.category}]` : ""}, fällig am ${shortDate(t.dueDate)}: ${t.completed ? "erledigt" : "offen"}`
-  ).join("\n");
-
-  return `Wochenübersicht (${shortDate(weekDays[0])} – ${shortDate(weekDays[6])}):\n\nPro Habit:\n${habitLines || "(keine Habits getrackt)"}\n\nTage im Detail:\n${dayLines}\n\nLangfristige Ziele der Person:\n${goalLines || "(noch keine Ziele angelegt)"}\n\nAufgaben mit Termin in dieser Woche:\n${taskLines || "(keine Aufgaben mit Termin in dieser Woche)"}`;
-}
-
-const WEEKLY_COACH_SYSTEM_PROMPT = `Du bist der eingebaute KI-Coach einer Habit-Tracking-App ("Lifetracker"). Das übergeordnete Ziel der Person lautet: ein besserer Mensch werden. Du bekommst eine Zusammenfassung einer ganzen Woche: pro Habit die Erfolge (inklusive der Beschreibung, was jedes Habit der Person bedeutet), tageweise Details inklusive eventueller Tagebucheinträge, ihre langfristigen Ziele (Goals), sowie ihre Aufgaben (Tasks) mit Termin in dieser Woche. Antworte AUSSCHLIESSLICH mit einem JSON-Objekt (kein Markdown-Codeblock, kein einleitender Text) exakt im Format {"report": "..."}. "report": ein ehrlicher, motivierender Wochenbericht auf Deutsch (ca. 150-200 Wörter, Fließtext mit 1-2 kurzen Absätzen, sprich die Person mit "du" an, keine Einleitung wie "Klar" oder "Hier ist"). Konzentriere dich darauf, was das Einhalten oder Nicht-Einhalten der Habits in dieser Woche für die Person bedeutet - bezogen auf die Bedeutung, die sie den Habits selbst gegeben hat - statt auf Punktzahlen. Setze die Habits in Bezug zu ihren langfristigen Zielen: welche Fortschritte wurden gemacht, was fehlt noch, was müsste die Person konkret tun, um ihren Zielen näherzukommen? Geh auf auffällige Punkte aus den Tagebucheinträgen und auf offene oder erledigte Aufgaben der Woche ein, wenn relevant. Schließe mit einem konkreten Fokus oder Vorsatz für die kommende Woche. Kein Smalltalk, keine Emojis, keine Zwischenüberschriften.`;
-
-async function fetchWeeklyReport(summary) {
-  const anthropicKey = getAnthropicKey();
-  if (!anthropicKey) throw new Error("Kein Anthropic API-Key hinterlegt (siehe Einstellungen).");
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 700,
-      system: WEEKLY_COACH_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: summary }],
-    }),
-  });
-  if (!response.ok) throw new Error("API-Fehler " + response.status);
-  const data = await response.json();
-  const raw = (data.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n").trim();
-  if (!raw) throw new Error("Leere Antwort");
-  const cleaned = raw.replace(/```json|```/g, "").trim();
-  let report = cleaned;
-  try {
-    const parsed = JSON.parse(cleaned);
-    report = (parsed.report || "").trim();
-  } catch {
-    // Fallback: Rohtext verwenden, falls kein valides JSON zurückkam
-  }
-  if (!report) throw new Error("Leere Antwort");
-  return report;
 }
 
 function RichTextEditor({ editorRef, initialHtml }) {
@@ -4109,11 +3650,9 @@ const rtfBtnStyle = {
   display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
 };
 
-function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, hasCoach, moods, persistMoods, statsByHabitId, isMobile, currentDateKey }) {
+function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, moods, persistMoods, statsByHabitId, isMobile, currentDateKey }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [selectedDay, setSelectedDay] = useState(todayKey());
-  const [loadingFeedback, setLoadingFeedback] = useState(false);
-  const [feedbackErr, setFeedbackErr] = useState(null);
   const [saved, setSaved] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [exportFrom, setExportFrom] = useState(() => toKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
@@ -4191,7 +3730,6 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
   useEffect(() => {
     if (editorRef.current) editorRef.current.innerHTML = dayEntry.text || "";
     setSaved(false);
-    setFeedbackErr(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDay]);
 
@@ -4201,23 +3739,6 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
     persistJournal(next);
     setSaved(true);
     setTimeout(() => setSaved(false), 1800);
-  };
-
-  const runFeedback = async () => {
-    setLoadingFeedback(true);
-    setFeedbackErr(null);
-    try {
-      const html = editorRef.current ? editorRef.current.innerHTML : (dayEntry.text || "");
-      const tasksForDay = (tasks || []).filter((t) => t.dueDate === selectedDay);
-      const summary = buildDaySummary(selectedDay, selectedHabitRows, html, goals, tasksForDay);
-      const feedback = await fetchDailyFeedback(summary);
-      const next = { ...journal, [selectedDay]: { ...(journal[selectedDay] || {}), text: html, feedback, feedbackAt: new Date().toISOString() } };
-      persistJournal(next);
-    } catch (e) {
-      setFeedbackErr("Feedback konnte gerade nicht geladen werden. Versuch es gleich noch einmal.");
-    } finally {
-      setLoadingFeedback(false);
-    }
   };
 
   return (
@@ -4388,41 +3909,6 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
         </div>
       </div>
 
-      {hasCoach && (
-        <div style={{
-          background: `linear-gradient(160deg, ${COLORS.surface}, ${COLORS.bgSoft})`,
-          border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14, padding: 16,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
-            <div style={{
-              width: 28, height: 28, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center",
-              background: `linear-gradient(135deg, ${COLORS.violet}, ${COLORS.ember1})`,
-            }}>
-              <Brain size={14} style={{ color: "#fff" }} />
-            </div>
-            <span style={{ fontWeight: 700, fontSize: 13.5 }}>Coach-Feedback zu diesem Tag</span>
-          </div>
-
-          {loadingFeedback ? (
-            <div style={{ color: COLORS.textMuted, fontSize: 13.5, display: "flex", alignItems: "center", gap: 8 }}>
-              <Sparkles size={14} style={{ color: COLORS.ember2 }} /> Analysiert deinen Tag …
-            </div>
-          ) : dayEntry.feedback ? (
-            <p style={{ fontSize: 13.5, lineHeight: 1.6, color: COLORS.text, margin: 0, marginBottom: 10 }}>{dayEntry.feedback}</p>
-          ) : (
-            <div style={{ color: COLORS.textMuted, fontSize: 13, marginBottom: 10 }}>Noch kein Feedback für diesen Tag.</div>
-          )}
-
-          {feedbackErr && <div style={{ color: COLORS.coral, fontSize: 12, marginBottom: 8 }}>{feedbackErr}</div>}
-
-          <button onClick={runFeedback} disabled={loadingFeedback} style={{
-            ...primaryBtn, display: "flex", alignItems: "center", gap: 7,
-            opacity: loadingFeedback ? 0.6 : 1, cursor: loadingFeedback ? "not-allowed" : "pointer",
-          }}>
-            <Sparkles size={13} /> {dayEntry.feedback ? "Feedback neu holen" : "Feedback holen"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -4430,8 +3916,7 @@ function JournalPage({ habits, entries, journal, persistJournal, goals, tasks, h
 /* ============================================================
    @section GOALS-PAGE — Langfristige Ziele, verknüpfte Habits, Erreichen mit Punktebonus
    GOALS
-   Langfristige Ziele mit Beschreibung und Punktebelohnung bei
-   Erfüllung. Werden dem Coach als Kontext für die Habits gegeben.
+   Langfristige Ziele mit Beschreibung und Punktebelohnung bei Erfüllung.
    ============================================================ */
 function GoalsPage({ goals, persistGoals, habits, persistHabits, entries, categories, onAddCategory, statsByHabitId, currentDateKey }) {
   const [showModal, setShowModal] = useState(false);
@@ -4521,7 +4006,7 @@ function GoalsPage({ goals, persistGoals, habits, persistHabits, entries, catego
         <div style={{ textAlign: "center", padding: "48px 20px", border: `1px dashed ${COLORS.border}`, borderRadius: 16, color: COLORS.textMuted }}>
           <Target size={28} style={{ color: COLORS.violet, marginBottom: 10 }} />
           <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.text, marginBottom: 4 }}>Noch keine Ziele</div>
-          <div style={{ fontSize: 13, marginBottom: 16 }}>Leg dein erstes langfristiges Ziel an – dein Coach setzt deine Habits dann in Bezug dazu.</div>
+          <div style={{ fontSize: 13, marginBottom: 16 }}>Leg dein erstes langfristiges Ziel an.</div>
           <button onClick={() => { setModalGoal(undefined); setShowModal(true); }} style={primaryBtn}>Erstes Ziel anlegen</button>
         </div>
       ) : (
@@ -8293,7 +7778,7 @@ function FinancePage({ financeEntries, persistFinanceEntries, financeCategories,
 }
 
 /* ============================================================
-   @section SETTINGS-PAGE — Export/Import (JSON), Kategorie-Verwaltung, Supabase/Anthropic-Key (ConnectionSettings)
+   @section SETTINGS-PAGE — Export/Import (JSON), Kategorie-Verwaltung, Account/Abmelden (AccountSettings)
    EINSTELLUNGEN / DATENSICHERUNG
    Export als JSON-Download, Import mit Vorschau + Bestätigung
    ============================================================ */
@@ -8322,9 +7807,8 @@ function downloadJSON(filename, obj) {
 }
 
 function SettingsPage({
-  habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets,
-  persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
-  onAnthropicKeyChange,
+  habits, entries, achievements, journal, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets,
+  persistHabits, persistEntries, persistAchievements, persistJournal, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
 }) {
   const fileInputRef = useRef(null);
   const [pendingImport, setPendingImport] = useState(null);
@@ -8334,7 +7818,7 @@ function SettingsPage({
   const handleExport = () => {
     const payload = {
       app: "life-os", version: 1, exportedAt: new Date().toISOString(),
-      data: { habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets },
+      data: { habits, entries, achievements, journal, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets },
     };
     downloadJSON(`life-os-backup-${todayKey()}.json`, payload);
   };
@@ -8448,11 +7932,6 @@ function SettingsPage({
       Erfolg: (ACHIEVEMENT_DEFS.find((d) => d.id === a.id) || {}).label || a.id, Datum: a.date,
     }));
 
-    const weeklyReportsSheet = Object.entries(weeklyReports || {}).map(([week, r]) => ({
-      Woche: week, Zeitraum: r.weekStart && r.weekEnd ? `${shortDate(r.weekStart)} - ${shortDate(r.weekEnd)}` : "",
-      Bericht: r.text || "", "Erstellt am": r.generatedAt ? new Date(r.generatedAt).toLocaleString("de-DE") : "",
-    }));
-
     const consumablesSheet = [];
     (consumables || []).forEach((area) => (area.items || []).forEach((item) => {
       consumablesSheet.push({ Bereich: area.name, Artikel: item.name, Verfügbar: item.available ? "Ja" : "Nein", Angelegt: item.createdAt || "" });
@@ -8488,7 +7967,6 @@ function SettingsPage({
     addSheet("Journal", journalSheet);
     addSheet("Stimmung", moodSheet);
     addSheet("Erfolge", achievementsSheet);
-    addSheet("Wochenberichte", weeklyReportsSheet);
     addSheet("Vorräte", consumablesSheet);
     addSheet("Einkaufsliste", shoppingSheet);
     addSheet("Notizen", notesSheet);
@@ -8525,9 +8003,7 @@ function SettingsPage({
     await persistHabits(Array.isArray(pendingImport.habits) ? pendingImport.habits : []);
     await persistEntries(pendingImport.entries && typeof pendingImport.entries === "object" ? pendingImport.entries : {});
     await persistAchievements(Array.isArray(pendingImport.achievements) ? pendingImport.achievements : []);
-    await persistCoach(pendingImport.coach || null);
     await persistJournal(pendingImport.journal && typeof pendingImport.journal === "object" ? pendingImport.journal : {});
-    await persistWeeklyReports(pendingImport.weeklyReports && typeof pendingImport.weeklyReports === "object" ? pendingImport.weeklyReports : {});
     await persistGoals(Array.isArray(pendingImport.goals) ? pendingImport.goals : []);
     await persistTasks(Array.isArray(pendingImport.tasks) ? pendingImport.tasks : []);
     await persistPersons(Array.isArray(pendingImport.persons) ? pendingImport.persons : []);
@@ -8567,7 +8043,7 @@ function SettingsPage({
           <span style={{ fontWeight: 700, fontSize: 14.5 }}>Daten exportieren</span>
         </div>
         <p style={{ fontSize: 13, color: COLORS.textMuted, lineHeight: 1.6, marginBottom: 14 }}>
-          Lädt eine JSON-Datei mit allen deinen Habits, Einträgen, Zielen, Aufgaben, Personen, Journal- und Coach-Daten herunter. Damit kannst du deine Daten sichern oder auf ein anderes Gerät übertragen.
+          Lädt eine JSON-Datei mit allen deinen Habits, Einträgen, Zielen, Aufgaben, Personen und Journal-Daten herunter. Damit kannst du deine Daten sichern oder auf ein anderes Gerät übertragen.
         </p>
         <button onClick={handleExport} style={{ ...primaryBtn, display: "flex", alignItems: "center", gap: 7 }}>
           <Download size={14} /> Daten exportieren
@@ -8651,7 +8127,7 @@ function SettingsPage({
         persons={persons} persistPersons={persistPersons}
       />
 
-      <ConnectionSettings onKeyChange={onAnthropicKeyChange} />
+      <AccountSettings />
     </div>
   );
 }
@@ -8952,21 +8428,15 @@ function PersonGroupManager({ groups, persistGroups, persons, persistPersons }) 
 }
 
 
-function ConnectionSettings({ onKeyChange }) {
-  const existing = getConfig() || {};
-  const [anthropicKey, setAnthropicKey] = useState(existing.anthropicKey || "");
-  const [saved, setSaved] = useState(false);
-  const [confirmReset, setConfirmReset] = useState(false);
+function AccountSettings() {
+  const session = getSession();
+  const [confirmLogout, setConfirmLogout] = useState(false);
 
-  const saveKey = () => {
-    setConfig({ ...existing, anthropicKey });
-    setSaved(true);
-    onKeyChange?.();
-    setTimeout(() => setSaved(false), 1800);
-  };
-
-  const resetSetup = () => {
-    localStorage.removeItem(CONFIG_KEY);
+  const logout = async () => {
+    try {
+      await supabaseFetch("/auth/v1/logout", { method: "POST" });
+    } catch { /* Logout lokal trotzdem durchziehen, auch wenn der Request fehlschlägt */ }
+    clearSession();
     window.location.reload();
   };
 
@@ -8976,35 +8446,20 @@ function ConnectionSettings({ onKeyChange }) {
         <div style={{ width: 30, height: 30, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", background: COLORS.violet + "1f" }}>
           <Settings size={15} style={{ color: COLORS.violet }} />
         </div>
-        <span style={{ fontWeight: 700, fontSize: 14.5 }}>Verbindung (dieses Gerät)</span>
+        <span style={{ fontWeight: 700, fontSize: 14.5 }}>Account</span>
       </div>
 
-      <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
-        Supabase-Projekt: <strong style={{ color: COLORS.text }}>{existing.supabaseUrl || "nicht verbunden"}</strong>
+      <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 16, lineHeight: 1.6 }}>
+        Angemeldet als <strong style={{ color: COLORS.text }}>{session?.user?.email || "unbekannt"}</strong>
       </div>
 
-      <label style={labelStyle}>Anthropic API-Key (für den Coach)</label>
-      <input
-        type="password" style={inputStyle} value={anthropicKey}
-        onChange={(e) => setAnthropicKey(e.target.value)} placeholder="sk-ant-..."
-      />
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-        <button onClick={saveKey} style={primaryBtn}>Speichern</button>
-        {saved && <span style={{ fontSize: 12, color: COLORS.mint }}>Gespeichert</span>}
-      </div>
-
-      <div style={{ borderTop: `1px solid ${COLORS.borderSoft}`, paddingTop: 14 }}>
-        <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 10 }}>
-          Setzt die Supabase-Verbindung auf diesem Gerät zurück (z. B. um ein anderes Projekt zu verbinden). Deine Daten in Supabase bleiben erhalten.
-        </div>
-        <button onClick={() => (confirmReset ? resetSetup() : setConfirmReset(true))} style={{
-          ...ghostBtn, color: COLORS.coral,
-          border: `1px solid ${confirmReset ? COLORS.coral : COLORS.border}`,
-          background: confirmReset ? COLORS.coral + "1f" : "transparent",
-        }}>
-          {confirmReset ? "Wirklich zurücksetzen?" : "Verbindung zurücksetzen"}
-        </button>
-      </div>
+      <button onClick={() => (confirmLogout ? logout() : setConfirmLogout(true))} style={{
+        ...ghostBtn, color: COLORS.coral,
+        border: `1px solid ${confirmLogout ? COLORS.coral : COLORS.border}`,
+        background: confirmLogout ? COLORS.coral + "1f" : "transparent",
+      }}>
+        {confirmLogout ? "Wirklich abmelden?" : "Abmelden"}
+      </button>
     </div>
   );
 }
@@ -9023,7 +8478,7 @@ function useIsMobile() {
   return isMobile;
 }
 
-function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }) {
+function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing }) {
   const items = [
     { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
     { key: "progress", label: "Fortschritt", Icon: TrendingUp },
@@ -9037,7 +8492,6 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
     { key: "finance", label: "Finanzen", Icon: PiggyBank },
     { key: "journal", label: "Journal", Icon: BookOpen },
     { key: "notes", label: "Notizen", Icon: FileText },
-    ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
     { key: "settings", label: "Einstellungen", Icon: Settings },
   ];
   return (
@@ -9093,7 +8547,7 @@ function Sidebar({ page, setPage, totalPoints, onRefresh, refreshing, hasCoach }
    @section MOBILE-NAV — BottomNav + MobileHeader (mobiles Layout, unter 760px)
    BOTTOM NAV / MOBILE HEADER (mobiles Layout)
    ============================================================ */
-function BottomNav({ page, setPage, hasCoach }) {
+function BottomNav({ page, setPage }) {
   const items = [
     { key: "dashboard", label: "Home", Icon: LayoutDashboard },
     { key: "progress", label: "Verlauf", Icon: TrendingUp },
@@ -9107,7 +8561,6 @@ function BottomNav({ page, setPage, hasCoach }) {
     { key: "finance", label: "Finanzen", Icon: PiggyBank },
     { key: "journal", label: "Journal", Icon: BookOpen },
     { key: "notes", label: "Notizen", Icon: FileText },
-    ...(hasCoach ? [{ key: "coach", label: "Coach", Icon: Brain }] : []),
     { key: "settings", label: "Settings", Icon: Settings },
   ];
   return (
@@ -9180,8 +8633,8 @@ function MobileHeader({ totalPoints, onRefresh, refreshing }) {
    ============================================================ */
 export default function LifeOS() {
   const {
-    habits, entries, achievements, coach, journal, weeklyReports, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets, loading, refreshing, error,
-    persistHabits, persistEntries, persistAchievements, persistCoach, persistJournal, persistWeeklyReports, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
+    habits, entries, achievements, journal, goals, tasks, persons, categories, personGroups, moods, consumables, shoppingList, notes, noteFolders, financeEntries, financeCategories, dashboardWidgets, loading, refreshing, error,
+    persistHabits, persistEntries, persistAchievements, persistJournal, persistGoals, persistTasks, persistPersons, persistCategories, persistPersonGroups, persistMoods, persistConsumables, persistShoppingList, persistNotes, persistNoteFolders, persistFinanceEntries, persistFinanceCategories, persistDashboardWidgets,
     refresh,
   } = useLifeOSData();
   const isMobile = useIsMobile();
@@ -9220,8 +8673,6 @@ export default function LifeOS() {
       sourcePersonId: personId, sourceLoanId: loanId,
     }]);
   };
-  const [hasCoachKey, setHasCoachKey] = useState(() => !!getAnthropicKey());
-  const refreshCoachKey = useCallback(() => setHasCoachKey(!!getAnthropicKey()), []);
   const [page, setPage] = useState("dashboard");
   const [modalHabit, setModalHabit] = useState(undefined);
   const [showModal, setShowModal] = useState(false);
@@ -9283,10 +8734,6 @@ export default function LifeOS() {
       persistAchievements([...achievements, ...newly.map((id) => ({ id, date: todayKey() }))]);
     }
   }, [totalPoints, loading, allStats, activeHabits, entries, achievements, persistAchievements]);
-
-  useEffect(() => {
-    if (page === "coach" && !hasCoachKey) setPage("dashboard");
-  }, [page, hasCoachKey]);
 
   const handleToggle = (habitId, dateKey, value) => {
     const next = { ...entries, [dateKey]: { ...(entries[dateKey] || {}), [habitId]: value } };
@@ -9375,7 +8822,7 @@ export default function LifeOS() {
         </div>
       )}
 
-      {isMobile ? <MobileHeader totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} /> : <Sidebar page={page} setPage={setPage} totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} hasCoach={hasCoachKey} />}
+      {isMobile ? <MobileHeader totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} /> : <Sidebar page={page} setPage={setPage} totalPoints={totalPoints} onRefresh={refresh} refreshing={refreshing} />}
 
       <div style={{
         flex: 1, overflowY: "auto", overscrollBehaviorY: "contain",
@@ -9390,9 +8837,6 @@ export default function LifeOS() {
               onEdit={(h) => { setModalHabit(h); setShowModal(true); }}
               onCreate={() => { setModalHabit(undefined); setShowModal(true); }}
               celebrateId={celebrateId}
-              coach={coach}
-              onOpenCoach={() => setPage("coach")}
-              hasCoach={hasCoachKey}
               goals={goals}
               tasks={tasks}
               persons={persons}
@@ -9429,8 +8873,7 @@ export default function LifeOS() {
           {page === "mood" && <MoodPage moods={moods} persistMoods={persistMoods} currentDateKey={currentDateKey} />}
           {page === "consumables" && <ConsumablesPage consumables={consumables} persistConsumables={persistConsumables} shoppingList={shoppingList} persistShoppingList={persistShoppingList} />}
           {page === "shopping" && <ShoppingListPage shoppingList={shoppingList} persistShoppingList={persistShoppingList} consumables={consumables} persistConsumables={persistConsumables} />}
-          {page === "coach" && hasCoachKey && <CoachPage habits={habits} entries={entries} coach={coach} persistCoach={persistCoach} goals={goals} tasks={tasks} journal={journal} weeklyReports={weeklyReports} persistWeeklyReports={persistWeeklyReports} statsByHabitId={statsByHabitId} />}
-          {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} hasCoach={hasCoachKey} moods={moods} persistMoods={persistMoods} statsByHabitId={statsByHabitId} isMobile={isMobile} currentDateKey={currentDateKey} />}
+          {page === "journal" && <JournalPage habits={habits} entries={entries} journal={journal} persistJournal={persistJournal} goals={goals} tasks={tasks} moods={moods} persistMoods={persistMoods} statsByHabitId={statsByHabitId} isMobile={isMobile} currentDateKey={currentDateKey} />}
           {page === "goals" && <GoalsPage goals={goals} persistGoals={persistGoals} habits={habits} persistHabits={persistHabits} entries={entries} categories={categories} onAddCategory={addCategory} statsByHabitId={statsByHabitId} currentDateKey={currentDateKey} />}
           {page === "tasks" && <TasksPage tasks={tasks} persistTasks={persistTasks} categories={categories} onAddCategory={addCategory} />}
           {page === "persons" && <PersonsPage persons={persons} persistPersons={persistPersons} personGroups={personGroups} onAddPersonGroup={addPersonGroup} isMobile={isMobile} />}
@@ -9438,12 +8881,11 @@ export default function LifeOS() {
           {page === "notes" && <NotesPage notes={notes} persistNotes={persistNotes} noteFolders={noteFolders} persistNoteFolders={persistNoteFolders} />}
           {page === "settings" && (
             <SettingsPage
-              habits={habits} entries={entries} achievements={achievements} coach={coach}
-              journal={journal} weeklyReports={weeklyReports} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList} notes={notes} noteFolders={noteFolders} financeEntries={financeEntries} financeCategories={financeCategories} dashboardWidgets={dashboardWidgets}
+              habits={habits} entries={entries} achievements={achievements}
+              journal={journal} goals={goals} tasks={tasks} persons={persons} categories={categories} personGroups={personGroups} moods={moods} consumables={consumables} shoppingList={shoppingList} notes={notes} noteFolders={noteFolders} financeEntries={financeEntries} financeCategories={financeCategories} dashboardWidgets={dashboardWidgets}
               persistHabits={persistHabits} persistEntries={persistEntries} persistAchievements={persistAchievements}
-              persistCoach={persistCoach} persistJournal={persistJournal} persistWeeklyReports={persistWeeklyReports}
+              persistJournal={persistJournal}
               persistGoals={persistGoals} persistTasks={persistTasks} persistPersons={persistPersons} persistCategories={persistCategories} persistPersonGroups={persistPersonGroups} persistMoods={persistMoods} persistConsumables={persistConsumables} persistShoppingList={persistShoppingList} persistNotes={persistNotes} persistNoteFolders={persistNoteFolders} persistFinanceEntries={persistFinanceEntries} persistFinanceCategories={persistFinanceCategories} persistDashboardWidgets={persistDashboardWidgets}
-              onAnthropicKeyChange={refreshCoachKey}
             />
           )}
         </div>
@@ -9468,7 +8910,7 @@ export default function LifeOS() {
           onToggle={handleToggle}
         />
       )}
-      {isMobile && <BottomNav page={page} setPage={setPage} hasCoach={hasCoachKey} />}
+      {isMobile && <BottomNav page={page} setPage={setPage} />}
     </div>
   );
 }
@@ -9479,15 +8921,15 @@ const appShellStyle = {
 };
 
 /* ============================================================
-   @section ENTRYPOINT — AppRoot (SetupGate + LifeOS) + ReactDOM-Mount
-   ROOT: zeigt Setup-Screen bis Supabase konfiguriert ist,
+   @section ENTRYPOINT — AppRoot (LoginGate + LifeOS) + ReactDOM-Mount
+   ROOT: zeigt den Anmeldescreen bis eine gültige Sitzung vorliegt,
    danach die eigentliche App.
    ============================================================ */
 function AppRoot() {
   return (
-    <SetupGate>
+    <LoginGate>
       <LifeOS />
-    </SetupGate>
+    </LoginGate>
   );
 }
 
