@@ -4973,6 +4973,33 @@ function ageAtNextBirthday(birthday, today = new Date()) {
   return birthdayYear - born.getFullYear();
 }
 
+// Reine Infoanzeige (keine Interaktion) der zuletzt eingetragenen Treffen
+// über alle Personen hinweg - zum schnellen Überblick oben auf der Personenseite.
+function RecentMeetingsInfo({ meetings }) {
+  return (
+    <div style={{
+      background: COLORS.surface, border: `1px solid ${COLORS.borderSoft}`, borderRadius: 14,
+      padding: "14px 16px", marginBottom: 26,
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>
+        Letzte Treffen
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {meetings.map((meeting) => (
+          <div key={`${meeting.personId}-${meeting.index}`} style={{
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "6px 2px", fontSize: 12.5,
+          }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: meeting.color || COLORS.mint, flexShrink: 0 }} />
+            <span style={{ fontWeight: 600, color: COLORS.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meeting.name}</span>
+            <span style={{ color: COLORS.textFaint, flexShrink: 0 }}>{shortDate(meeting.date)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup, isMobile }) {
   const [showModal, setShowModal] = useState(false);
   const [modalPerson, setModalPerson] = useState(undefined);
@@ -4990,6 +5017,13 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup, 
   const totalMeetings = trackedPersons.reduce((s, p) => s + (p.meetings || []).length, 0);
   const metTodayCount = trackedPersons.filter((p) => (p.meetings || []).includes(todayKey())).length;
   const relationshipCount = persons.reduce((s, p) => s + (p.relationships || []).length, 0) / 2;
+
+  // Reine Infoanzeige der zuletzt eingetragenen Treffen über alle Personen hinweg,
+  // ohne Lösch-/Bearbeiten-Möglichkeit (die gibt es schon im Verlauf pro Person).
+  const recentMeetings = trackedPersons
+    .flatMap((p) => (p.meetings || []).map((date, index) => ({ personId: p.id, name: p.name, color: p.color, date, index })))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.index - a.index)
+    .slice(0, 10);
 
   const handleSave = (person) => {
     const exists = persons.some((p) => p.id === person.id);
@@ -5407,6 +5441,8 @@ function PersonsPage({ persons, persistPersons, personGroups, onAddPersonGroup, 
           {relationshipCount > 0 && <StatCard label="Verbindungen" value={relationshipCount} suffix="" accent={COLORS.coral} />}
         </div>
       )}
+
+      {recentMeetings.length > 0 && <RecentMeetingsInfo meetings={recentMeetings} />}
 
       {persons.length === 0 ? (
         <div style={{ textAlign: "center", padding: "48px 20px", border: `1px dashed ${COLORS.border}`, borderRadius: 16, color: COLORS.textMuted }}>
